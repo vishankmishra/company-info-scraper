@@ -1,0 +1,25 @@
+[Unit]
+Description=Company Info Scraper Service
+After=network.target ollama.service
+Requires=ollama.service
+
+[Service]
+Type=simple
+User=scraper
+Group=scraper
+WorkingDirectory=/opt/company-scraper
+Environment="PATH=/opt/company-scraper/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStartPre=/bin/bash -c 'source /opt/company-scraper/venv/bin/activate && ollama list > /dev/null 2>&1 || exit 1'
+ExecStart=/opt/company-scraper/venv/bin/python /opt/company-scraper/main.py --batch /opt/company-scraper/data/domains.txt
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/company-scraper/logs/service.log
+StandardError=append:/opt/company-scraper/logs/service.error.log
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
+

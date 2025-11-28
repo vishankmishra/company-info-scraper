@@ -7,6 +7,12 @@ import scrapy
 
 
 class CompanyInfoScraperItem(scrapy.Item):
-    # define the fields for your item here like:
-    # name = scrapy.Field()
-    pass
+    url = scrapy.Field()
+    raw_text = scrapy.Field()  # We feed this to the LLM
+    # Structured fields (LLM will fill these later)
+    products = scrapy.Field()
+    customers = scrapy.Field()
+    partnerships = scrapy.Field()
+    case_studies = scrapy.Field()
+    # Extraction status tracking (PH1-S3)
+    extraction_status = scrapy.Field()  # "success" or "failure"

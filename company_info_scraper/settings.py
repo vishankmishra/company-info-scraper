@@ -14,18 +14,19 @@ NEWSPIDER_MODULE = "company_info_scraper.spiders"
 
 ADDONS = {}
 
-DEPTH_LIMIT=3
+DEPTH_LIMIT=1  # Only crawl root page (depth 0) and one level deep (depth 1)
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 #USER_AGENT = "company_info_scraper (+http://www.yourdomain.com)"
 
-# Obey robots.txt rules
-ROBOTSTXT_OBEY = True
+# Obey robots.txt rules (set to False for faster crawling, but less respectful)
+ROBOTSTXT_OBEY = True  # Keep True to respect robots.txt, but this can slow things down
 
 # Concurrency and throttling settings
 #CONCURRENT_REQUESTS = 16
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 1
+DOWNLOAD_DELAY = 0.1  # Minimal delay for fast crawling
+RANDOMIZE_DOWNLOAD_DELAY = False  # Disable randomization for consistent timing
 
 # Disable cookies (enabled by default)
 #COOKIES_ENABLED = False
@@ -59,9 +60,9 @@ DOWNLOAD_DELAY = 1
 
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-#ITEM_PIPELINES = {
-#    "company_info_scraper.pipelines.CompanyInfoScraperPipeline": 300,
-#}
+ITEM_PIPELINES = {
+   "company_info_scraper.pipelines.LLMExtractionPipeline": 300,
+}
 
 # Enable and configure the AutoThrottle extension (disabled by default)
 # See https://docs.scrapy.org/en/latest/topics/autothrottle.html
@@ -86,3 +87,62 @@ DOWNLOAD_DELAY = 1
 
 # Set settings whose default value is deprecated to a future-proof value
 FEED_EXPORT_ENCODING = "utf-8"
+
+# ... existing settings ...
+
+# ENABLE PLAYWRIGHT
+DOWNLOAD_HANDLERS = {
+    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+}
+
+TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+
+# Playwright settings - optimized for fast crawling (PH3-S4: Browser context reuse)
+PLAYWRIGHT_BROWSER_TYPE = "chromium"  # Use chromium for faster startup
+
+# Browser launch options - browser instance is reused across requests
+PLAYWRIGHT_LAUNCH_OPTIONS = {
+    "headless": True,
+    "timeout": 15000,  # 15 seconds browser launch timeout
+}
+
+# Default navigation timeout for page loads
+PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 10000  # 10 seconds
+
+# PH3-S4: Persistent browser context for reuse across multiple page requests
+# This avoids launching a new browser for each page (saves 3-5s per page)
+PLAYWRIGHT_CONTEXTS = {
+    "persistent": {
+        "viewport": {"width": 1280, "height": 720},
+        "ignore_https_errors": True,
+        "java_script_enabled": True,
+        # User agent for better compatibility
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+}
+
+# Use the persistent context by default
+PLAYWRIGHT_DEFAULT_CONTEXT_NAME = "persistent"
+
+# Maximum pages per browser context before recycling (prevents memory leaks)
+PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 10
+
+# Block unnecessary resources to speed up page loading
+# Use PLAYWRIGHT_ABORT_REQUEST for proper resource blocking
+def should_abort_request(request):
+    """Block images, fonts, stylesheets, media, etc. for faster loading"""
+    resource_type = request.resource_type
+    return resource_type in ["image", "media", "font", "stylesheet", "websocket", "manifest"]
+
+PLAYWRIGHT_ABORT_REQUEST = should_abort_request
+
+# DATA FORMAT
+FEED_FORMAT = "csv"
+FEED_URI = "output_data.csv"
+
+# Ollama Configuration (can be overridden via config.yaml or environment variables)
+OLLAMA_MODEL = 'llama3'
+OLLAMA_TIMEOUT = 90  # 90 seconds - LLM needs 45-90s for complex pages
+OLLAMA_MAX_RETRIES = 3  # Retry failed LLM calls up to 3 times with exponential backoff
+MAX_TEXT_LENGTH = 5000  # Reduced from 8000 to 5000 for faster LLM processing

@@ -1,93 +1,428 @@
-# Company-Info-Scraper
+# Company Info Scraper
 
+An agentic AI-powered web scraper that extracts corporate data (Products/Services, Customers, Partnerships, and Case Studies) from company websites using Google ADK-compatible agent orchestration, intelligent dual-path scraping (static + dynamic), and local LLMs via Ollama for intelligent data extraction.
 
+## ✨ Key Features
 
-## Getting started
+- **🔍 Dual-Path Scraping**: Automatically detects static vs dynamic sites
+  - Static sites → Fast HTTP scraping (BeautifulSoup)
+  - Dynamic sites → Browser-based scraping (Playwright)
+- **⚡ Parallel Processing**: Process multiple domains concurrently
+- **🤖 Google ADK Integration**: Full ADK-compatible agent architecture
+- **🔄 Intelligent Retry**: Exponential backoff for LLM calls
+- **📊 Production Ready**: Health checks, graceful shutdown, JSON logging
+- **🎯 Structured Extraction**: Products, Customers, Partnerships, Case Studies
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Overview
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+This tool automates the extraction of critical corporate information:
+- **Products/Services**: What the company offers
+- **Customers**: Client names, testimonials, customer logos
+- **Partnerships**: Strategic alliances, integration partners
+- **Case Studies**: Customer success stories, implementations
 
-## Add your files
+## Architecture
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+The system uses a multi-agent architecture compatible with Google ADK:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/sarthichitroda/company-info-scraper.git
-git branch -M main
-git push -uf origin main
+┌─────────────────────────────────────────────────────────────┐
+│                    OrchestratorAgent                        │
+│  ┌─────────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  SiteDetector   │→ │ScrapingAgent │→ │LLMExtraction  │  │
+│  │  (static/dyn)   │  │(BS4/Playwright)│ │   Agent       │  │
+│  └─────────────────┘  └──────────────┘  └───────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+                    ┌─────────────────┐
+                    │  BatchProcessor │ (parallel domains)
+                    └─────────────────┘
 ```
 
-## Integrate with your tools
+### Agents
 
-- [ ] [Set up project integrations](https://gitlab.com/sarthichitroda/company-info-scraper/-/settings/integrations)
+1. **OrchestratorAgent**: Coordinates workflow, handles site detection routing
+2. **ScrapingAgent**: Dual-path scraping (static: httpx+BS4, dynamic: Playwright)
+3. **LLMExtractionAgent**: Processes text through Ollama with retry logic
+4. **SiteDetector**: Analyzes sites to choose optimal scraper
 
-## Collaborate with your team
+## Prerequisites
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- Python 3.9+
+- Ollama installed and running locally
+- Playwright browsers installed
+- Virtual environment (recommended)
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+
+### 1. Clone the Repository
+
+```bash
+git clone <repository-url>
+cd company-info-scraper
+```
+
+### 2. Set Up Virtual Environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+### 3. Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Install Playwright Browsers
+
+```bash
+playwright install
+```
+
+### 5. Install and Start Ollama
+
+**Install Ollama:**
+- Linux/Mac: `curl https://ollama.ai/install.sh | sh`
+- Windows: Download from https://ollama.ai/download
+
+**Start Ollama Server:**
+```bash
+ollama serve
+```
+
+**Pull Required Model:**
+```bash
+ollama pull llama3
+```
 
 ## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### Health Check (Verify Setup)
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```bash
+# Basic health check
+python main.py --health
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+# Verbose with details
+python main.py --health --health-verbose
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+# JSON output (for monitoring)
+python main.py --health --json
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+### Single Domain
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+# Auto-detect scraper type (recommended)
+python main.py example.com
+
+# Force static scraper (fast)
+python main.py example.com --scraper static
+
+# Force dynamic scraper (JavaScript sites)
+python main.py example.com --scraper dynamic
+```
+
+### Batch Processing
+
+```bash
+# Sequential processing
+python main.py --batch domains.txt
+
+# Parallel processing (faster!)
+python main.py --batch domains.txt --parallel
+
+# Parallel with custom concurrency
+python main.py --batch domains.txt --parallel --max-concurrent 10
+```
+
+Create `domains.txt` with one domain per line:
+```
+example.com
+another-company.com
+https://www.third-company.com
+```
+
+### JSON Logging (Production)
+
+```bash
+# JSON format for log aggregation
+python main.py --batch domains.txt --log-format json
+
+# With log file
+python main.py example.com --log-format json --log-file logs/scrape.log
+```
+
+### Using the Workflow API
+
+```python
+from company_info_scraper import run_scrape_workflow, ScrapeWorkflowConfig
+
+# Simple usage
+result = run_scrape_workflow('example.com')
+
+# With configuration
+config = ScrapeWorkflowConfig(
+    auto_detect=True,       # Auto-detect static/dynamic
+    max_concurrent=5,       # Parallel domains
+    llm_timeout=90,         # LLM timeout in seconds
+    output_format='csv'     # Output format
+)
+
+result = run_scrape_workflow(
+    ['example.com', 'test.com'],
+    config=config,
+    output_file='results.csv'
+)
+
+print(f"Scraped {result.successful}/{result.total_domains} domains")
+print(f"Static: {result.static_scraped}, Dynamic: {result.dynamic_scraped}")
+```
+
+### Using Google ADK
+
+```python
+from company_info_scraper.workflows.scrape_workflow import create_adk_scrape_agent
+from company_info_scraper.agents import is_adk_available
+
+if is_adk_available():
+    agent = create_adk_scrape_agent()
+    
+    # Use with ADK Runner
+    from google.adk import Runner
+    runner = Runner(agent=agent)
+    result = runner.run("Scrape example.com for company information")
+```
+
+## Configuration
+
+Create `config.yaml` in the project root:
+
+```yaml
+# Ollama Configuration
+ollama_model: llama3          # Options: llama3, mistral, llama2
+ollama_timeout: 90            # Timeout in seconds (90s recommended)
+ollama_max_retries: 3         # Retry failed LLM calls
+
+# Scraping Configuration
+max_text_length: 5000         # Max characters to send to LLM
+download_delay: 0.5           # Delay between requests
+depth_limit: 1                # Crawl depth (0 = root only)
+auto_detect: true             # Auto-detect static/dynamic sites
+
+# Batch Processing
+batch:
+  max_concurrent: 5           # Parallel domain processing
+  rate_limit_delay: 1.0       # Delay between domain starts
+  timeout_per_domain: 120     # Max time per domain
+  retry_failed: true          # Retry failed domains
+  max_retries: 2              # Max retries per domain
+
+# Rate Limiting
+rate_limiting:
+  enabled: true
+  requests_per_second: 2.0
+  burst_size: 5
+  per_domain_delay: 1.0
+
+# Logging
+log_level: INFO               # DEBUG, INFO, WARNING, ERROR
+log_format: text              # text or json
+log_file: logs/scraper.log
+
+# Output
+output_file: output_data.csv
+```
+
+## CLI Options
+
+```
+usage: main.py [-h] [--batch FILE] [--parallel] [--max-concurrent N]
+               [--scraper {auto,static,dynamic}] [--config CONFIG]
+               [--output OUTPUT] [--model MODEL] [--health] [--health-verbose]
+               [--json] [--log-format {text,json}] [--log-file LOG_FILE]
+               [-v] [-q]
+               [domain]
+
+Options:
+  domain                Domain or URL to scrape
+  --batch FILE          Batch file with domains (one per line)
+  --parallel            Enable parallel processing
+  --max-concurrent N    Max concurrent domains (default: 5)
+  --scraper TYPE        Force scraper: auto, static, dynamic
+  --config CONFIG       Config file path (default: config.yaml)
+  --output OUTPUT       Output CSV file (default: output_data.csv)
+  --model MODEL         Ollama model override
+  --health              Run health checks and exit
+  --health-verbose      Verbose health check output
+  --json                JSON output (for health checks)
+  --log-format TYPE     Log format: text or json
+  --log-file PATH       Log file path
+  -v, --verbose         Enable DEBUG logging
+  -q, --quiet           Enable WARNING level only
+```
+
+## Output Format
+
+The scraper generates a CSV file with these columns:
+
+| Column | Description |
+|--------|-------------|
+| `url` | Scraped page URL |
+| `products` | Extracted products/services |
+| `customers` | Extracted customer names |
+| `partnerships` | Extracted partnerships |
+| `case_studies` | Extracted case studies |
+| `extraction_status` | "success" or "failure" |
+| `scraper_type` | "static" or "dynamic" |
+
+## Project Structure
+
+```
+company-info-scraper/
+├── company_info_scraper/
+│   ├── agents/                # Google ADK-compatible agents
+│   │   ├── base_agent.py      # ADK base with tool registration
+│   │   ├── scraping_agent.py  # Dual-path scraping
+│   │   ├── llm_extraction_agent.py
+│   │   └── orchestrator_agent.py
+│   ├── services/              # Core services
+│   │   ├── llm_service.py     # Async LLM with retry
+│   │   ├── site_detector.py   # Static/dynamic detection
+│   │   ├── batch_processor.py # Parallel processing
+│   │   └── extraction_queue.py
+│   ├── spiders/
+│   │   ├── scraper.py         # Playwright spider
+│   │   └── static_scraper.py  # httpx+BeautifulSoup
+│   ├── workflows/             # ADK workflows
+│   │   └── scrape_workflow.py
+│   ├── health.py              # Health checks
+│   ├── logging_config.py      # JSON/text logging
+│   ├── pipelines.py
+│   ├── items.py
+│   └── settings.py
+├── tests/
+│   ├── test_integration.py    # E2E tests
+│   ├── test_health.py
+│   └── test_adk_*.py
+├── main.py                    # CLI entry point
+├── config.yaml
+└── requirements.txt
+```
+
+## Performance
+
+| Scenario | Time | Notes |
+|----------|------|-------|
+| Single static domain | ~5-10s | Fast HTTP scraping |
+| Single dynamic domain | ~20-30s | Browser + JS rendering |
+| 5 domains (parallel) | ~30-60s | With auto-detection |
+| 10 domains (parallel) | ~60-90s | max_concurrent=5 |
+| LLM extraction per page | ~5-15s | Depends on text length |
+
+## Testing
+
+### Run Tests
+
+```bash
+# Quick tests (no network/LLM required)
+python tests/test_integration.py --quick
+
+# Full integration tests
+python tests/test_integration.py --full
+
+# Using pytest
+pytest tests/ -v
+pytest tests/test_integration.py -v -m "not slow"
+```
+
+### Validate Output
+
+```bash
+python validate_output.py output_data.csv
+```
+
+## Troubleshooting
+
+### Health Check Fails
+
+```bash
+# Run verbose health check
+python main.py --health --health-verbose
+
+# Common issues:
+# - Ollama not running: ollama serve
+# - Model not pulled: ollama pull llama3
+# - Missing dependencies: pip install -r requirements.txt
+```
+
+### Ollama Connection Errors
+
+```bash
+# Start Ollama
+ollama serve
+
+# Check if running
+curl http://localhost:11434/api/tags
+
+# Pull model if missing
+ollama pull llama3
+```
+
+### All Results Show N/A
+
+1. Increase `ollama_timeout` to 90-120 seconds
+2. Check Ollama logs for errors
+3. Try a different model: `ollama pull mistral`
+4. Verify website has the expected content
+
+### Graceful Shutdown
+
+During batch processing, press `Ctrl+C` once to:
+- Complete current domain(s)
+- Save partial results
+- Exit cleanly
+
+Press `Ctrl+C` twice to force immediate exit.
+
+## Google ADK Integration
+
+The agents are fully ADK-compatible:
+
+```python
+from company_info_scraper.agents import (
+    OrchestratorAgent,
+    create_adk_workflow,
+    is_adk_available
+)
+
+# Check ADK availability
+if is_adk_available():
+    # Create ADK workflow with all tools
+    workflow = create_adk_workflow({'auto_detect': True})
+    
+    # Get individual agent tools
+    orchestrator = OrchestratorAgent()
+    tools = orchestrator.get_adk_tools()
+    
+    # Tools available:
+    # - scrape_and_extract: Complete workflow
+    # - batch_scrape_and_extract: Parallel batch
+    # - detect_site_type: Site analysis
+    # - scrape_website: Web scraping only
+    # - extract_company_info: LLM extraction only
+```
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+[Add your license here]
+
+## Support
+
+- Check `--health` output for system status
+- Review logs: `logs/scraper.log`
+- Run tests: `python tests/test_integration.py --quick`
+- See [DEPLOYMENT.md](DEPLOYMENT.md) for VM deployment
+- See [QUICKSTART.md](QUICKSTART.md) for quick start guide
