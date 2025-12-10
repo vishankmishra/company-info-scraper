@@ -8,8 +8,15 @@ Uses Google ADK-compatible agent orchestration with:
 - Configurable logging
 """
 
-import argparse
+# IMPORTANT: Install asyncio reactor BEFORE any Twisted imports
+# This is required for Playwright (dynamic scraper) compatibility
 import sys
+if 'twisted.internet.reactor' not in sys.modules:
+    import asyncio
+    from twisted.internet import asyncioreactor
+    asyncioreactor.install(asyncio.new_event_loop())
+
+import argparse
 import os
 import signal
 import yaml

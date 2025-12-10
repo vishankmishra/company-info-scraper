@@ -1,51 +1,51 @@
 # Company Info Scraper Configuration
 
 # Ollama Configuration
-ollama_model: llama3  # Options: llama3, mistral, gamma
-ollama_timeout: 90    # Timeout in seconds for LLM requests (45-90s needed for complex pages)
+ollama_model: mistral # Options: llama3, mistral, gemma (faster than llama3)
+ollama_timeout: 120 # Timeout in seconds for LLM requests (increased for stability)
 ollama_max_retries: 3 # Max retries for failed LLM calls
 
 # Scraping Configuration
-max_text_length: 5000  # Maximum characters to send to LLM per page
-download_delay: 0.5    # Delay between requests (seconds)
-depth_limit: 1         # Maximum crawl depth (0 = root only, 1 = root + one level)
-auto_detect: true      # Auto-detect static vs dynamic sites
+max_text_length: 5000 # Maximum characters to send to LLM per page
+download_delay: 0.5 # Delay between requests (seconds)
+depth_limit: 1 # Maximum crawl depth (0 = root only, 1 = root + one level)
+auto_detect: true # Auto-detect static vs dynamic sites
 
 # Output Configuration
-output_file: output_data.csv  # Output CSV file path
+output_file: output_data.csv # Output CSV file path
 
 # Logging Configuration (PH6-S3)
-log_level: INFO      # Options: DEBUG, INFO, WARNING, ERROR
-log_format: text     # Options: text, json (use json for production/log aggregation)
-log_file: logs/scraper.log  # Log file path (relative to project root)
+log_level: INFO # Options: DEBUG, INFO, WARNING, ERROR
+log_format: text # Options: text, json (use json for production/log aggregation)
+log_file: logs/scraper.log # Log file path (relative to project root)
 
 # Performance Tuning
-concurrent_requests: 1  # Number of concurrent requests (increase for faster processing)
-concurrent_requests_per_domain: 1  # Concurrent requests per domain
+concurrent_requests: 1 # Number of concurrent requests (increase for faster processing)
+concurrent_requests_per_domain: 1 # Concurrent requests per domain
 
 # Batch Processing Configuration (PH4-S2)
 batch:
-  max_concurrent: 5         # Maximum concurrent domain processing
-  rate_limit_delay: 1.0     # Delay in seconds between starting each domain (rate limiting)
-  request_delay: 0.5        # Delay between requests within a domain
-  timeout_per_domain: 120   # Max time per domain in seconds before timeout
-  retry_failed: true        # Whether to retry failed domains
-  max_retries: 2            # Max retries per domain
+  max_concurrent: 5 # Maximum concurrent domain processing
+  rate_limit_delay: 1.0 # Delay in seconds between starting each domain (rate limiting)
+  request_delay: 0.5 # Delay between requests within a domain
+  timeout_per_domain: 120 # Max time per domain in seconds before timeout
+  retry_failed: true # Whether to retry failed domains
+  max_retries: 2 # Max retries per domain
 
 # Rate Limiting (PH4-S2)
 rate_limiting:
-  enabled: true                    # Enable rate limiting
-  requests_per_second: 2.0         # Global requests per second limit
-  burst_size: 5                    # Allow burst of this many requests
-  per_domain_delay: 1.0            # Minimum delay between requests to same domain
+  enabled: true # Enable rate limiting
+  requests_per_second: 2.0 # Global requests per second limit
+  burst_size: 5 # Allow burst of this many requests
+  per_domain_delay: 1.0 # Minimum delay between requests to same domain
 
 # Google ADK Configuration (PH5-S1)
 adk:
-  enabled: false               # Set to true when ADK is fully integrated
-  model: gemini-2.0-flash      # ADK LLM model for orchestration
-  project_id: ""               # Google Cloud project ID (if using Vertex AI)
-  use_local_llm: true          # Use local Ollama instead of Gemini for extraction
-  
+  enabled: false # Set to true when ADK is fully integrated
+  model: gemini-2.0-flash # ADK LLM model for orchestration
+  project_id: "" # Google Cloud project ID (if using Vertex AI)
+  use_local_llm: true # Use local Ollama instead of Gemini for extraction
+
 # Country-Specific Settings (for multi-country deployment)
 # Uncomment and configure as needed
 # countries:
