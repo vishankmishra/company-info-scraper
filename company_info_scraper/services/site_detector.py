@@ -18,10 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 class SiteType(Enum):
-    """Classification of site rendering type."""
-    STATIC = "static"      # Can be scraped with requests + BeautifulSoup
-    DYNAMIC = "dynamic"    # Requires JavaScript rendering (Playwright)
-    UNKNOWN = "unknown"    # Could not determine
+    """Classification of site type (Phase 3: Corporate detection)."""
+    # Phase 3: Corporate site taxonomy
+    CORPORATE = "corporate"    # Company landing page, B2B/B2C business
+    ECOMMERCE = "ecommerce"    # Product catalog, shopping cart
+    BLOG = "blog"              # Article-centric, timestamped posts
+    DIRECTORY = "directory"    # Listings of multiple companies
+    OTHER = "other"            # Docs, social, government, etc.
+    
+    # Legacy (Phase 2 - kept for backward compatibility)
+    STATIC = "static"      
+    DYNAMIC = "dynamic"    
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -32,18 +40,22 @@ class DetectionResult:
     reasons: List[str]
     url: str
     response_time_ms: Optional[float] = None
+    signal_count: int = 0  # Phase 3: Number of signals matched
 
 
 class SiteDetector:
-    """Detects whether a site needs JavaScript rendering.
+    """Detects site type for classification (Phase 3: Corporate detection).
+    
+    Phase 3: Classifies sites as CORPORATE, ECOMMERCE, BLOG, DIRECTORY, or OTHER.
+    Defaults to CORPORATE if uncertain. Requires 3+ signals for confident classification.
     
     Usage:
         detector = SiteDetector()
-        result = await detector.detect("https://example.com")
-        if result.site_type == SiteType.STATIC:
-            # Use BeautifulSoup scraper
+        result = await detector.detect_corporate("https://example.com")
+        if result.site_type == SiteType.CORPORATE:
+            # Process corporate site
         else:
-            # Use Playwright scraper
+            # Skip non-corporate
     """
     
     # JavaScript framework indicators in HTML
@@ -312,6 +324,192 @@ class SiteDetector:
         """
         import asyncio
         return asyncio.run(self.detect(url))
+    
+    async def detect_corporate(self, url: str) -> DetectionResult:
+        """Phase 3: Detect if site is CORPORATE vs other types.
+        
+        Uses homepage + first-level links to classify site type.
+        Requires 3+ signals for confident classification.
+        Defaults to CORPORATE if uncertain.
+        
+        Args:
+            url: The URL to analyze
+            
+        Returns:
+            DetectionResult with site_type ∈ {CORPORATE, ECOMMERCE, BLOG, DIRECTORY, OTHER}
+        """
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        reasons: List[str] = []
+        
+        # Signal counters for each category
+        corporate_signals = 0
+        ecommerce_signals = 0
+        blog_signals = 0
+        directory_signals = 0
+        other_signals = 0
+        
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers={"User-Agent": self.user_agent}
+            ) as client:
+                response = await client.get(url)
+                content = response.text.lower()
+                
+                # Extract links for analysis
+                links = re.findall(r'href=["\']([^"\']+)["\']', content)
+                links_str = ' '.join(links[:50])  # First 50 links
+                
+                # CORPORATE signals (from research doc)
+                if re.search(r'/about|/about-us|/company|/who-we-are', links_str):
+                    corporate_signals += 1
+                    reasons.append("Has /about or /company link")
+                
+                if re.search(r'/products|/services|/solutions|/offerings', links_str):
+                    corporate_signals += 1
+                    reasons.append("Has /products or /services link")
+                
+                if re.search(r'/contact|/contact-us', links_str):
+                    corporate_signals += 1
+                    reasons.append("Has /contact link")
+                
+                if re.search(r'/customers|/clients|/case-studies|/success-stories|/testimonials', links_str):
+                    corporate_signals += 1
+                    reasons.append("Has /customers or /case-studies link")
+                
+                if re.search(r'/partners|/partnerships|/integrations|/alliances', links_str):
+                    corporate_signals += 1
+                    reasons.append("Has /partners link")
+                
+                if re.search(r'request demo|contact sales|get started|schedule demo', content):
+                    corporate_signals += 1
+                    reasons.append("Has 'Request Demo' or 'Contact Sales' CTA")
+                
+                # Check for shopping cart (negative signal for corporate)
+                if not re.search(r'/cart|/checkout|/shop|/store|add to cart|buy now', content):
+                    corporate_signals += 1
+                    reasons.append("No shopping cart detected")
+                
+                # Check for article timestamps (negative signal for corporate)
+                if not re.search(r'posted on|published:|<time |article|<article', content):
+                    corporate_signals += 1
+                    reasons.append("No article timestamps")
+                
+                # ECOMMERCE signals
+                if re.search(r'/cart|/checkout|/shop|/store', links_str):
+                    ecommerce_signals += 1
+                    reasons.append("Has /cart or /shop link")
+                
+                if re.search(r'\$\d+\.?\d*|€\d+|add to cart|buy now|add to basket', content):
+                    ecommerce_signals += 1
+                    reasons.append("Has price patterns or 'Add to Cart'")
+                
+                if re.search(r'product|sku|catalog', content):
+                    ecommerce_signals += 1
+                    reasons.append("Has product/SKU keywords")
+                
+                # BLOG/NEWS signals
+                if re.search(r'/blog|/news|/articles|/posts', links_str):
+                    blog_signals += 1
+                    reasons.append("Has /blog or /news link")
+                
+                if re.search(r'posted on|published:|by \w+\s+\w+|<article|<time', content):
+                    blog_signals += 1
+                    reasons.append("Has article timestamps or bylines")
+                
+                if re.search(r'read more|continue reading|rss|feed', content):
+                    blog_signals += 1
+                    reasons.append("Has blog patterns (Read More, RSS)")
+                
+                # DIRECTORY/MARKETPLACE signals
+                if re.search(r'compare|rating|review|filter|search companies', content):
+                    directory_signals += 1
+                    reasons.append("Has comparison/rating features")
+                
+                # Count company logos/names (rough heuristic)
+                logo_count = content.count('logo') + content.count('brand')
+                if logo_count > 10:
+                    directory_signals += 1
+                    reasons.append(f"Multiple logos/brands detected ({logo_count})")
+                
+                # OTHER signals (docs, social, etc.)
+                if re.search(r'/docs|/documentation|/api|/reference|/wiki', links_str):
+                    other_signals += 1
+                    reasons.append("Has /docs or /api link")
+                
+                if re.search(r'\.gov|\.edu|github\.io|readthedocs', url):
+                    other_signals += 1
+                    reasons.append("Government, education, or docs domain")
+                
+        except Exception as e:
+            logger.warning(f"Error detecting corporate site type for {url}: {e}")
+            reasons.append(f"Detection error: {str(e)[:50]}")
+            # Default to CORPORATE on error
+            return DetectionResult(
+                site_type=SiteType.CORPORATE,
+                confidence=0.5,
+                reasons=reasons + ["Defaulting to CORPORATE (detection error)"],
+                url=url,
+                signal_count=0
+            )
+        
+        # Classification logic: Require 3+ signals for confident classification
+        max_signals = max(corporate_signals, ecommerce_signals, blog_signals, directory_signals, other_signals)
+        
+        if max_signals < 3:
+            # Not enough signals - default to CORPORATE
+            logger.info(f"Insufficient signals ({max_signals}) for {url}, defaulting to CORPORATE")
+            return DetectionResult(
+                site_type=SiteType.CORPORATE,
+                confidence=0.6,
+                reasons=reasons + ["Insufficient signals - defaulting to CORPORATE"],
+                url=url,
+                signal_count=max_signals
+            )
+        
+        # Confident classification
+        if corporate_signals >= 3 and corporate_signals >= max_signals:
+            site_type = SiteType.CORPORATE
+            confidence = min(0.95, 0.6 + (corporate_signals * 0.1))
+        elif ecommerce_signals >= 3 and ecommerce_signals >= max_signals:
+            site_type = SiteType.ECOMMERCE
+            confidence = min(0.95, 0.6 + (ecommerce_signals * 0.1))
+        elif blog_signals >= 3 and blog_signals >= max_signals:
+            site_type = SiteType.BLOG
+            confidence = min(0.95, 0.6 + (blog_signals * 0.1))
+        elif directory_signals >= 3 and directory_signals >= max_signals:
+            site_type = SiteType.DIRECTORY
+            confidence = min(0.95, 0.6 + (directory_signals * 0.1))
+        elif other_signals >= 3 and other_signals >= max_signals:
+            site_type = SiteType.OTHER
+            confidence = min(0.95, 0.6 + (other_signals * 0.1))
+        else:
+            # Tie or unclear - default to CORPORATE
+            site_type = SiteType.CORPORATE
+            confidence = 0.6
+            reasons.append("Ambiguous signals - defaulting to CORPORATE")
+        
+        logger.info(
+            f"Corporate detection for {url}: {site_type.value} "
+            f"(confidence: {confidence:.2f}, signals: corp={corporate_signals}, "
+            f"ecom={ecommerce_signals}, blog={blog_signals}, dir={directory_signals}, other={other_signals})"
+        )
+        
+        return DetectionResult(
+            site_type=site_type,
+            confidence=confidence,
+            reasons=reasons,
+            url=url,
+            signal_count=max_signals
+        )
+    
+    def detect_corporate_sync(self, url: str) -> DetectionResult:
+        """Synchronous wrapper for detect_corporate()."""
+        import asyncio
+        return asyncio.run(self.detect_corporate(url))
 
 
 # Convenience function for quick detection

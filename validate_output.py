@@ -16,12 +16,13 @@ def validate_csv(csv_file: str):
         print(f"Error: File not found: {csv_file}")
         return False
     
-    required_fields = ['url', 'products', 'customers', 'partnerships', 'case_studies', 'extraction_status']
+    required_fields = ['url', 'products', 'services', 'customers', 'partnerships', 'case_studies', 'extraction_status']
     
     issues = []
     stats = {
         'total_records': 0,
         'has_products': 0,
+        'has_services': 0,
         'has_customers': 0,
         'has_partnerships': 0,
         'has_case_studies': 0,
@@ -45,6 +46,9 @@ def validate_csv(csv_file: str):
                 # Check data quality
                 if row.get('products') and row.get('products') != 'N/A':
                     stats['has_products'] += 1
+                
+                if row.get('services') and row.get('services') != 'N/A':
+                    stats['has_services'] += 1
                 
                 if row.get('customers') and row.get('customers') != 'N/A':
                     stats['has_customers'] += 1
@@ -82,7 +86,8 @@ def validate_csv(csv_file: str):
     print(f"  Failure: {stats['extraction_failure']}/{stats['total_records']} ({stats['extraction_failure']*100/max(stats['total_records'],1):.1f}%)")
     
     print(f"\nField Population:")
-    print(f"  Products/Services: {stats['has_products']}/{stats['total_records']} ({stats['has_products']*100/max(stats['total_records'],1):.1f}%)")
+    print(f"  Products: {stats['has_products']}/{stats['total_records']} ({stats['has_products']*100/max(stats['total_records'],1):.1f}%)")
+    print(f"  Services: {stats['has_services']}/{stats['total_records']} ({stats['has_services']*100/max(stats['total_records'],1):.1f}%)")
     print(f"  Customers: {stats['has_customers']}/{stats['total_records']} ({stats['has_customers']*100/max(stats['total_records'],1):.1f}%)")
     print(f"  Partnerships: {stats['has_partnerships']}/{stats['total_records']} ({stats['has_partnerships']*100/max(stats['total_records'],1):.1f}%)")
     print(f"  Case Studies: {stats['has_case_studies']}/{stats['total_records']} ({stats['has_case_studies']*100/max(stats['total_records'],1):.1f}%)")

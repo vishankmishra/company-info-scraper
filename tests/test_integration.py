@@ -299,7 +299,8 @@ def validate_csv_output(csv_path: str) -> Dict[str, Any]:
         'has_partnerships': 0,
         'has_case_studies': 0,
         'extraction_success': 0,
-        'extraction_failure': 0
+        'extraction_failure': 0,
+        'quality_score': 0.0
     }
     
     with open(csv_path, 'r', encoding='utf-8') as f:
@@ -307,27 +308,128 @@ def validate_csv_output(csv_path: str) -> Dict[str, Any]:
         for row in reader:
             stats['total_records'] += 1
             
-            if row.get('products') and row['products'] not in ('N/A', ''):
+            # Count non-N/A fields
+            non_na_fields = 0
+            if row.get('products') and row['products'] not in ('N/A', '', 'QUEUED'):
                 stats['has_products'] += 1
-            if row.get('customers') and row['customers'] not in ('N/A', ''):
+                non_na_fields += 1
+            if row.get('customers') and row['customers'] not in ('N/A', '', 'QUEUED'):
                 stats['has_customers'] += 1
-            if row.get('partnerships') and row['partnerships'] not in ('N/A', ''):
+                non_na_fields += 1
+            if row.get('partnerships') and row['partnerships'] not in ('N/A', '', 'QUEUED'):
                 stats['has_partnerships'] += 1
-            if row.get('case_studies') and row['case_studies'] not in ('N/A', ''):
+                non_na_fields += 1
+            if row.get('case_studies') and row['case_studies'] not in ('N/A', '', 'QUEUED'):
                 stats['has_case_studies'] += 1
+                non_na_fields += 1
             
             if row.get('extraction_status') == 'success':
                 stats['extraction_success'] += 1
             else:
                 stats['extraction_failure'] += 1
+            
+            # Quality: at least 2 non-N/A fields = good extraction
+            if non_na_fields >= 2:
+                stats['quality_score'] += 1
     
     # Calculate percentages
     total = max(stats['total_records'], 1)
     stats['products_pct'] = stats['has_products'] * 100 // total
     stats['customers_pct'] = stats['has_customers'] * 100 // total
     stats['success_pct'] = stats['extraction_success'] * 100 // total
+    stats['quality_pct'] = int((stats['quality_score'] / total) * 100)
     
     return stats
+
+
+# =============================================================================
+# Edge Case Tests
+# =============================================================================
+
+class TestEdgeCases:
+    """Test edge cases and error handling."""
+    
+    @pytest.mark.asyncio
+    async def test_invalid_domain(self):
+        """Test handling of invalid domain."""
+        from company_info_scraper.services import SiteDetector
+        
+        detector = SiteDetector()
+        
+        # Should handle gracefully, not crash
+        result = await detector.detect('invalid-domain-xyz-12345.com')
+        assert result is not None
+        print(f"  Invalid domain handled: {result.site_type.value if result else 'None'}")
+    
+    @pytest.mark.asyncio
+    async def test_timeout_handling(self):
+        """Test timeout handling in LLM service."""
+        skip_if_no_ollama()
+        
+        from company_info_scraper.services import LLMExtractionService
+        
+        # Very short timeout
+        service = LLMExtractionService(timeout=1, max_retries=1)
+        
+        # Large text that may timeout
+        large_text = "test " * 10000
+        
+        result = await service.extract(large_text, url='test://timeout')
+        
+        # Should return a result (success or failure), not crash
+        assert result is not None
+        assert result.status in ('success', 'failure')
+        print(f"  Timeout test result: {result.status}")
+    
+    @pytest.mark.asyncio
+    async def test_empty_content(self):
+        """Test handling of empty content."""
+        skip_if_no_ollama()
+        
+        from company_info_scraper.services import LLMExtractionService
+        
+        service = LLMExtractionService()
+        result = await service.extract("", url='test://empty')
+        
+        assert result is not None
+        # Empty content should be handled gracefully
+        print(f"  Empty content handled: {result.status}")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.slow
+    async def test_mixed_static_dynamic_batch(self):
+        """Test batch processing with mixed static/dynamic sites."""
+        skip_if_no_network()
+        skip_if_no_ollama()
+        
+        from company_info_scraper.workflows import (
+            ScrapeWorkflow,
+            ScrapeWorkflowConfig
+        )
+        
+        config = ScrapeWorkflowConfig(
+            auto_detect=True,
+            max_concurrent=2,
+            llm_timeout=60
+        )
+        
+        workflow = ScrapeWorkflow(config)
+        
+        # Mix of static and potentially dynamic sites
+        mixed_domains = ['example.com', 'httpbin.org']
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / 'mixed_output'
+            result = await workflow.run_async(mixed_domains, str(output_file))
+            
+            assert result is not None
+            # Should handle both types
+            assert result.total_domains == len(mixed_domains)
+            
+            print(f"\n  Mixed batch results:")
+            print(f"    Static: {result.static_scraped}")
+            print(f"    Dynamic: {result.dynamic_scraped}")
+            print(f"    Success rate: {(result.successful/result.total_domains)*100:.0f}%")
 
 
 # =============================================================================

@@ -8,7 +8,14 @@ Supports dual-path scraping:
 Updated for Google ADK compatibility.
 """
 
-import asyncio
+# CRITICAL: Install asyncio reactor BEFORE any Twisted/Scrapy imports
+import sys
+if 'twisted.internet.reactor' not in sys.modules:
+    import asyncio
+    from twisted.internet import asyncioreactor
+    # Install asyncio reactor for Playwright compatibility
+    asyncioreactor.install()
+
 import csv
 import os
 from typing import Dict, Any, Optional, List
@@ -104,11 +111,10 @@ class ScrapingAgent(BaseAgent):
     
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute scraping for a given domain.
+        Execute Playwright scraping for a given domain (Phase 2: Universal Playwright).
         
         Args:
             input_data: Must contain 'domain' key.
-                       Optional 'scraper_type': 'static' or 'dynamic' (default: 'dynamic')
             
         Returns:
             Dictionary with 'success', 'domain', 'output_file', 'raw_data', and 'scraper_type'
@@ -120,17 +126,12 @@ class ScrapingAgent(BaseAgent):
             }
         
         domain = input_data['domain']
-        scraper_type = input_data.get('scraper_type', 'dynamic')
         
-        self.logger.info(f"Starting {scraper_type} scraping for domain: {domain}")
+        self.logger.info(f"Starting universal Playwright scraping for domain: {domain}")
         
         try:
-            if scraper_type == 'static':
-                result = asyncio.run(self._run_static_scraper(domain))
-            else:
-                result = self._run_crawler(domain)
-            
-            result['scraper_type'] = scraper_type
+            result = self._run_crawler(domain)
+            result['scraper_type'] = 'dynamic'
             return result
         except Exception as e:
             self.logger.error(f"Scraping error for domain {domain}: {e}")
@@ -138,16 +139,15 @@ class ScrapingAgent(BaseAgent):
                 'success': False,
                 'error': str(e),
                 'domain': domain,
-                'scraper_type': scraper_type
+                'scraper_type': 'dynamic'
             }
     
     async def execute_async(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute scraping asynchronously.
+        Execute Playwright scraping asynchronously (Phase 2: Universal Playwright).
         
         Args:
             input_data: Must contain 'domain' key.
-                       Optional 'scraper_type': 'static' or 'dynamic'
             
         Returns:
             Dictionary with 'success', 'domain', 'output_file', and 'raw_data'
@@ -159,17 +159,12 @@ class ScrapingAgent(BaseAgent):
             }
         
         domain = input_data['domain']
-        scraper_type = input_data.get('scraper_type', 'dynamic')
         
-        self.logger.info(f"Starting async {scraper_type} scraping for domain: {domain}")
+        self.logger.info(f"Starting async universal Playwright scraping for domain: {domain}")
         
         try:
-            if scraper_type == 'static':
-                result = await self._run_static_scraper(domain)
-            else:
-                result = await asyncio.to_thread(self._run_crawler, domain)
-            
-            result['scraper_type'] = scraper_type
+            result = await asyncio.to_thread(self._run_crawler, domain)
+            result['scraper_type'] = 'dynamic'
             return result
         except Exception as e:
             self.logger.error(f"Scraping error for domain {domain}: {e}")
@@ -177,7 +172,7 @@ class ScrapingAgent(BaseAgent):
                 'success': False,
                 'error': str(e),
                 'domain': domain,
-                'scraper_type': scraper_type
+                'scraper_type': 'dynamic'
             }
     
     async def _run_static_scraper(self, domain: str) -> Dict[str, Any]:
@@ -216,71 +211,138 @@ class ScrapingAgent(BaseAgent):
         }
     
     def _run_crawler(self, domain: str) -> Dict[str, Any]:
-        """Run Scrapy crawler in-process using CrawlerRunner."""
-        from company_info_scraper.spiders.scraper import FullPageSpider
+        """
+        Run Scrapy crawler in isolated subprocess with its own reactor.
         
-        # Get project settings
+        FIX: Changed from CrawlerProcess to subprocess-isolated execution because
+        CrawlerProcess.start() expects to control reactor lifecycle exclusively.
+        When called from within OrchestratorAgent, the reactor is already installed
+        and causes conflicts.
+        
+        Solution: Run crawler in separate subprocess with completely isolated Python
+        interpreter and reactor instance.
+        """
+        import subprocess
+        import json
+        import tempfile
+        from pathlib import Path
+        
+        # Get project settings to pass to subprocess
         settings = get_project_settings()
         
-        # Override settings for this run
-        settings.set('FEED_URI', self.output_file)
-        settings.set('FEED_FORMAT', 'csv')
-        settings.set('LOG_LEVEL', 'INFO')
+        # Create temporary script file for subprocess
+        script_content = f'''
+import sys
+import os
+import json
+
+# Add project root to path
+sys.path.insert(0, "{os.getcwd()}")
+
+# Install reactor BEFORE any Twisted imports
+if 'twisted.internet.reactor' not in sys.modules:
+    import asyncio
+    from twisted.internet import asyncioreactor
+    asyncioreactor.install()
+
+from scrapy.crawler import CrawlerProcess
+from scrapy.utils.project import get_project_settings
+from company_info_scraper.spiders.scraper import FullPageSpider
+
+# Get settings
+settings = get_project_settings()
+settings.set('FEED_URI', None)
+settings.set('LOG_LEVEL', 'INFO')
+settings.set('ROBOTSTXT_OBEY', False)
+
+# Spider reference container
+spider_ref = [None]
+
+def crawler_started(spider):
+    spider_ref[0] = spider
+
+from scrapy import signals
+
+# Create process and crawl
+process = CrawlerProcess(settings)
+process.crawl(FullPageSpider, domain="{domain}")
+
+if process.crawlers:
+    crawler = list(process.crawlers)[-1]
+    crawler.signals.connect(crawler_started, signal=signals.spider_opened)
+
+process.start()
+
+# Collect results
+result = {{
+    'success': True,
+    'items_count': len(spider_ref[0].collected_items) if spider_ref[0] and hasattr(spider_ref[0], 'collected_items') else 0,
+    'items': spider_ref[0].collected_items if spider_ref[0] and hasattr(spider_ref[0], 'collected_items') else []
+}}
+
+# Write results to temp file
+output_file = "{self.output_file}"
+with open(output_file + '.result.json', 'w') as f:
+    json.dump(result, f)
+'''
         
-        # Use QueueingPipeline if configured (fast mode)
-        if self.use_queue:
-            settings.set('ITEM_PIPELINES', {
-                'company_info_scraper.pipelines.QueueingPipeline': 300
-            })
-            self.logger.info("Using QueueingPipeline for fast scraping")
+        # Write script to temp file
+        script_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
+        script_file.write(script_content)
+        script_file.close()
         
-        # Clear any existing output
-        self._collected_items.clear()
-        
-        # Track success/failure
-        crawl_success = [False]  # Use list to allow mutation in nested function
-        crawl_error = [None]
-        
-        @defer.inlineCallbacks
-        def run_spider():
-            try:
-                runner = CrawlerRunner(settings)
-                yield runner.crawl(FullPageSpider, domain=domain)
-                crawl_success[0] = True
-            except Exception as e:
-                crawl_error[0] = str(e)
-                self.logger.error(f"Crawler error: {e}")
-            finally:
-                # Stop reactor when done
+        try:
+            self.logger.info(f"Starting crawler for {domain} in subprocess")
+            
+            # Clear any existing output file
+            if os.path.exists(self.output_file):
                 try:
-                    reactor.stop()
-                except ReactorNotRunning:
+                    os.remove(self.output_file)
+                except Exception:
                     pass
-        
-        # Check if reactor is already running
-        if reactor.running:
-            # If reactor is running, we need a different approach
-            self.logger.warning("Reactor already running - using deferred execution")
-            d = run_spider()
-            # This case is complex; for now, raise an error
-            raise RuntimeError(
-                "Cannot run crawler when reactor is already running. "
-                "Use execute_async() instead or ensure no other Twisted code is running."
+            
+            self._collected_items.clear()
+            
+            # Run script in subprocess
+            result = subprocess.run(
+                [sys.executable, script_file.name],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=os.getcwd()
             )
-        else:
-            # Start reactor and run spider
-            reactor.callWhenRunning(run_spider)
-            reactor.run(installSignalHandlers=False)
+            
+            if result.returncode != 0:
+                self.logger.error(f"Subprocess failed: {result.stderr}")
+                raise RuntimeError(f"Crawler subprocess failed: {result.stderr}")
+            
+            # Read results from temp file
+            result_file = self.output_file + '.result.json'
+            if os.path.exists(result_file):
+                with open(result_file, 'r') as f:
+                    subprocess_result = json.load(f)
+                
+                # Get items from result
+                raw_data = subprocess_result.get('items', [])
+                self._collected_items.extend(raw_data)
+                
+                # Clean up result file
+                os.remove(result_file)
+            else:
+                self.logger.warning("No result file found from subprocess")
+                raw_data = []
+            
+        finally:
+            # Clean up script file
+            try:
+                os.unlink(script_file.name)
+            except Exception:
+                pass
         
-        if not crawl_success[0]:
-            return {
-                'success': False,
-                'error': crawl_error[0] or 'Crawler failed',
-                'domain': domain
-            }
+        # Get scraped data from collected items (populated by subprocess)
+        raw_data = self._collected_items.copy()
         
-        # Read scraped data
-        raw_data = self._read_output_file()
+        self.logger.info(f"Collected {len(raw_data)} items from crawler")
         
         self.log_result({
             'domain': domain,

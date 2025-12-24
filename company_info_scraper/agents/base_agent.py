@@ -17,11 +17,13 @@ import functools
 # ADK imports - graceful fallback if not installed
 try:
     from google.adk import Agent
+    from google.adk.agents import LlmAgent as ADKLlmAgent
     from google.adk.tools import FunctionTool
     ADK_AVAILABLE = True
 except ImportError:
     ADK_AVAILABLE = False
     Agent = object  # Fallback for type hints
+    ADKLlmAgent = None
     FunctionTool = None
 
 
@@ -161,11 +163,9 @@ class BaseAgent(ABC):
         # Add any custom registered tools
         for spec in self._tool_specs:
             try:
-                tool = FunctionTool(
-                    name=spec.name,
-                    description=spec.description,
-                    func=spec.func
-                )
+                # Create a wrapper function with proper name and docstring for ADK
+                func = self._wrap_tool_for_adk(spec)
+                tool = FunctionTool(func=func)
                 tools.append(tool)
             except Exception as e:
                 self.logger.error(f"Failed to create tool {spec.name}: {e}")
@@ -183,18 +183,31 @@ class BaseAgent(ABC):
             """Execute the agent with the provided input."""
             return self.execute(kwargs)
         
-        # Set proper docstring
+        # Set proper name and docstring for ADK
+        execute_wrapper.__name__ = f"{self.name.lower()}_execute"
         execute_wrapper.__doc__ = self._get_execute_description()
         
         try:
-            return FunctionTool(
-                name=f"{self.name.lower()}_execute",
-                description=self._get_execute_description(),
-                func=execute_wrapper
-            )
+            return FunctionTool(func=execute_wrapper)
         except Exception as e:
             self.logger.error(f"Failed to create execute tool: {e}")
             return None
+    
+    def _wrap_tool_for_adk(self, spec: AgentToolSpec) -> Callable:
+        """Wrap a tool spec function for ADK FunctionTool.
+        
+        ADK FunctionTool extracts name and description from the function itself,
+        not from parameters. So we create a properly named wrapper function.
+        """
+        # Create wrapper with proper name
+        def tool_wrapper(**kwargs):
+            return spec.func(**kwargs)
+        
+        # Set function name and docstring for ADK to discover
+        tool_wrapper.__name__ = spec.name
+        tool_wrapper.__doc__ = spec.description
+        
+        return tool_wrapper
     
     def _get_execute_description(self) -> str:
         """Get description for the execute tool. Override in subclasses."""
@@ -217,7 +230,7 @@ class BaseAgent(ABC):
             return None
         
         try:
-            from google.adk import LlmAgent
+            from google.adk.agents import LlmAgent
             
             tools = self.get_adk_tools()
             
@@ -232,7 +245,7 @@ class BaseAgent(ABC):
             return agent
             
         except ImportError:
-            self.logger.error("google.adk.LlmAgent not found")
+            self.logger.error("google.adk.agents.LlmAgent not found")
             return None
         except Exception as e:
             self.logger.error(f"Failed to create ADK agent: {e}")

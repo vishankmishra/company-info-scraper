@@ -27,7 +27,8 @@ from typing import Dict, Any, List, Optional, Callable, Union
 
 # ADK imports - graceful fallback
 try:
-    from google.adk import Agent, LlmAgent
+    from google.adk import Agent, Runner
+    from google.adk.agents import LlmAgent
     from google.adk.tools import FunctionTool
     ADK_AVAILABLE = True
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
     Agent = object
     LlmAgent = None
     FunctionTool = None
+    Runner = None
 
 from company_info_scraper.agents import (
     OrchestratorAgent,
@@ -289,7 +291,13 @@ class ScrapeWorkflow:
         return results
     
     async def _run_with_adk(self, domains: List[str]) -> List[DomainScrapeResult]:
-        """Run workflow using ADK orchestration."""
+        """Run workflow using ADK orchestration (PH5-S2: Complete ADK Runner integration).
+        
+        This method uses the ADK Runner to execute the workflow with:
+        - Full observability and telemetry
+        - ADK-native tool calling and orchestration
+        - Session management and state tracking
+        """
         if not is_adk_available():
             self.logger.warning("ADK not available, falling back to native mode")
             return await self._run_native(domains)
@@ -303,15 +311,112 @@ class ScrapeWorkflow:
                 self.logger.warning("Failed to create ADK workflow, using native mode")
                 return await self._run_native(domains)
             
-            # For now, use the orchestrator's batch processing
-            # In a full ADK implementation, this would use ADK's Runner
-            # to execute the workflow with full observability
-            self.logger.info("ADK workflow created, executing via orchestrator")
-            return await self._run_native(domains)
+            self.logger.info(f"Executing ADK workflow for {len(domains)} domains")
+            
+            # Use ADK Runner for actual execution
+            from google.adk import Runner
+            from google.adk.sessions import InMemorySessionService
+            
+            # Create session service for Runner
+            session_service = InMemorySessionService()
+            runner = Runner(
+                app_name="CompanyInfoScraper",
+                agent=self._adk_workflow, 
+                session_service=session_service
+            )
+            results = []
+            
+            # Process each domain through ADK
+            for i, domain in enumerate(domains, 1):
+                self.logger.info(f"ADK processing [{i}/{len(domains)}]: {domain}")
+                
+                try:
+                    # Create task prompt for ADK agent
+                    task = f"Scrape and extract company information from {domain}"
+                    
+                    # Run through ADK with full orchestration
+                    adk_result = runner.run(task)
+                    
+                    # Parse ADK result and convert to DomainScrapeResult
+                    # ADK returns execution results that we need to interpret
+                    domain_result = self._parse_adk_result(domain, adk_result)
+                    results.append(domain_result)
+                    
+                    self.logger.info(f"ADK completed {domain}: {domain_result.records_count} records")
+                    
+                except Exception as e:
+                    self.logger.error(f"ADK execution failed for {domain}: {e}")
+                    # Create failed result
+                    results.append(DomainScrapeResult(
+                        domain=domain,
+                        success=False,
+                        scraper_type='unknown',
+                        error=f"ADK execution error: {str(e)}"
+                    ))
+            
+            return results
             
         except Exception as e:
-            self.logger.error(f"ADK execution failed: {e}, falling back to native")
+            self.logger.error(f"ADK Runner initialization failed: {e}, falling back to native")
             return await self._run_native(domains)
+    
+    def _parse_adk_result(self, domain: str, adk_result) -> DomainScrapeResult:
+        """Parse ADK Runner result into DomainScrapeResult.
+        
+        Args:
+            domain: The domain that was processed
+            adk_result: Result from ADK Runner execution
+            
+        Returns:
+            DomainScrapeResult with extracted data
+        """
+        try:
+            # ADK result structure varies by version
+            # Try to extract the result data
+            if hasattr(adk_result, 'output'):
+                output = adk_result.output
+            elif hasattr(adk_result, 'result'):
+                output = adk_result.result
+            elif isinstance(adk_result, dict):
+                output = adk_result
+            else:
+                output = str(adk_result)
+            
+            # Parse the output to extract records
+            # The output should contain the scraped and extracted data
+            import json
+            
+            if isinstance(output, str):
+                try:
+                    output = json.loads(output)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Extract records from output
+            records = []
+            if isinstance(output, dict):
+                if 'records' in output:
+                    records = output['records']
+                elif 'products' in output or 'customers' in output:
+                    # Single record result
+                    records = [output]
+            
+            return DomainScrapeResult(
+                domain=domain,
+                success=True,
+                scraper_type='adk',
+                records_count=len(records),
+                records=records
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse ADK result for {domain}: {e}")
+            return DomainScrapeResult(
+                domain=domain,
+                success=False,
+                scraper_type='adk',
+                error=f"Result parsing error: {str(e)}"
+            )
     
     def _create_adk_workflow(self):
         """Create an ADK workflow agent."""
@@ -363,7 +468,7 @@ class ScrapeWorkflow:
         fieldnames = sorted(fieldnames)
         
         # Ensure important fields come first
-        priority_fields = ['url', 'source_domain', 'products', 'customers', 
+        priority_fields = ['url', 'source_domain', 'products', 'services', 'customers', 
                           'partnerships', 'case_studies', 'extraction_status']
         ordered_fields = []
         for f in priority_fields:
@@ -402,26 +507,23 @@ class ScrapeWorkflow:
         tools = []
         
         try:
-            # Scrape single domain tool
-            tools.append(FunctionTool(
-                name="scrape_domain",
-                description="Scrape a single domain and extract company information",
-                func=self._tool_scrape_domain
-            ))
+            # Create wrapper functions with proper names and docstrings
+            def scrape_domain(domain: str) -> Dict[str, Any]:
+                """Scrape a single domain and extract company information."""
+                return self._tool_scrape_domain(domain)
             
-            # Batch scrape tool
-            tools.append(FunctionTool(
-                name="batch_scrape",
-                description="Scrape multiple domains in parallel",
-                func=self._tool_batch_scrape
-            ))
+            def batch_scrape(domains: List[str]) -> Dict[str, Any]:
+                """Scrape multiple domains in parallel."""
+                return self._tool_batch_scrape(domains)
             
-            # Detect site type tool
-            tools.append(FunctionTool(
-                name="detect_site",
-                description="Detect if a website is static or dynamic",
-                func=self._tool_detect_site
-            ))
+            def detect_site(domain: str) -> Dict[str, Any]:
+                """Detect if a website is static or dynamic."""
+                return self._tool_detect_site(domain)
+            
+            # Create FunctionTools (ADK 1.19.0 API: only func parameter)
+            tools.append(FunctionTool(func=scrape_domain))
+            tools.append(FunctionTool(func=batch_scrape))
+            tools.append(FunctionTool(func=detect_site))
             
         except Exception as e:
             self.logger.error(f"Failed to create ADK tools: {e}")
@@ -562,7 +664,7 @@ def create_adk_scrape_agent(
         return None
     
     try:
-        from google.adk import LlmAgent
+        from google.adk.agents import LlmAgent
         
         workflow = ScrapeWorkflow(config)
         tools = workflow.get_adk_tools()

@@ -205,8 +205,8 @@ class BatchProcessor:
     def __init__(
         self,
         max_concurrent: int = 5,
-        auto_detect: bool = True,
-        default_scraper: str = 'static',
+        auto_detect: bool = False,
+        default_scraper: str = 'dynamic',
         llm_timeout: int = 90,
         llm_max_retries: int = 3,
         rate_limit_delay: float = 1.0,
@@ -221,8 +221,8 @@ class BatchProcessor:
         
         Args:
             max_concurrent: Maximum concurrent domain processing
-            auto_detect: Whether to auto-detect static/dynamic sites
-            default_scraper: Default scraper type if detection fails
+            auto_detect: Phase 2 - ignored, always uses Playwright
+            default_scraper: Phase 2 - should always be 'dynamic'
             llm_timeout: Timeout for LLM extraction
             llm_max_retries: Max retries for LLM calls
             rate_limit_delay: Delay between starting each domain
@@ -293,8 +293,8 @@ class BatchProcessor:
         
         return cls(
             max_concurrent=batch_config.get('max_concurrent', 5),
-            auto_detect=config.get('auto_detect', True),
-            default_scraper='static',
+            auto_detect=False,  # Phase 2: Always Playwright
+            default_scraper='dynamic',  # Phase 2: Always Playwright
             llm_timeout=config.get('ollama_timeout', 90),
             llm_max_retries=config.get('ollama_max_retries', 3),
             rate_limit_delay=batch_config.get('rate_limit_delay', 1.0),
@@ -505,24 +505,12 @@ class BatchProcessor:
         start_time = time.time()
         
         try:
-            # Step 1: Detect site type
-            if self.auto_detect:
-                scraper_type = await self._detect_site_type(domain)
-            else:
-                scraper_type = self.default_scraper
+            # Phase 2: Universal Playwright - always use dynamic scraper
+            scraper_type = 'dynamic'
+            logger.info(f"Using universal Playwright scraper for {domain}")
             
-            # Step 2: Scrape based on type
-            if scraper_type == 'static':
-                raw_data = await self._scrape_static(domain)
-            else:
-                # For dynamic sites, we'd use Playwright
-                # For now, fall back to static if dynamic not available in async context
-                logger.warning(
-                    f"Dynamic scraping not available in batch mode for {domain}, "
-                    f"falling back to static"
-                )
-                raw_data = await self._scrape_static(domain)
-                scraper_type = 'static'
+            # Scrape using Playwright
+            raw_data = await self._scrape_dynamic(domain)
             
             # Step 3: LLM Extraction (if not skipped)
             records = []
@@ -582,7 +570,7 @@ class BatchProcessor:
             return self.default_scraper
     
     async def _scrape_static(self, domain: str) -> List[Dict[str, Any]]:
-        """Scrape using static scraper."""
+        """Scrape using static scraper (deprecated, kept for backward compatibility)."""
         items = await self.static_scraper.scrape(domain)
         
         # Convert to dict format
@@ -590,6 +578,29 @@ class BatchProcessor:
             {'url': item.get('url', ''), 'raw_text': item.get('raw_text', '')}
             for item in items
         ]
+    
+    async def _scrape_dynamic(self, domain: str) -> List[Dict[str, Any]]:
+        """Scrape using Playwright (dynamic scraper)."""
+        from company_info_scraper.agents.scraping_agent import ScrapingAgent
+        
+        scraping_agent = ScrapingAgent(config=self.config)
+        
+        # Execute scraping via agent
+        result = await scraping_agent.execute_async({
+            'domain': domain,
+            'scraper_type': 'dynamic'
+        })
+        
+        if result.get('success'):
+            raw_data = result.get('raw_data', [])
+            # Convert to dict format
+            return [
+                {'url': item.get('url', ''), 'raw_text': item.get('raw_text', '')}
+                for item in raw_data
+            ]
+        else:
+            logger.error(f"Dynamic scraping failed for {domain}: {result.get('error')}")
+            return []
     
     async def _extract_all(self, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Extract data from all scraped pages using LLM."""
@@ -604,6 +615,7 @@ class BatchProcessor:
                 results.append({
                     'url': url,
                     'products': extraction.products,
+                    'services': extraction.services,
                     'customers': extraction.customers,
                     'partnerships': extraction.partnerships,
                     'case_studies': extraction.case_studies,
@@ -613,6 +625,7 @@ class BatchProcessor:
                 results.append({
                     'url': url,
                     'products': 'N/A',
+                    'services': 'N/A',
                     'customers': 'N/A',
                     'partnerships': 'N/A',
                     'case_studies': 'N/A',
@@ -644,7 +657,7 @@ class BatchProcessor:
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
         
         fieldnames = [
-            'url', 'domain', 'products', 'customers', 
+            'url', 'domain', 'products', 'services', 'customers', 
             'partnerships', 'case_studies', 'extraction_status',
             'scraper_type', 'elapsed_ms'
         ]

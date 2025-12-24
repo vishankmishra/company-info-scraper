@@ -14,7 +14,8 @@ import sys
 if 'twisted.internet.reactor' not in sys.modules:
     import asyncio
     from twisted.internet import asyncioreactor
-    asyncioreactor.install(asyncio.new_event_loop())
+    # FIX: Use the default loop, do NOT create a new one.
+    asyncioreactor.install()
 
 import argparse
 import os
@@ -90,6 +91,137 @@ def run_health_check(config: dict, verbose: bool = False, json_output: bool = Fa
     )
 
 
+def run_process_queue(
+    queue_file: str,
+    output_file: str = 'output_data.csv',
+    config: dict = None,
+    quiet: bool = False,
+    parallel: bool = False,
+    max_concurrent: int = 3
+) -> int:
+    """
+    Process a saved extraction queue with LLM (PH2-S2).
+    
+    Loads a queue file created by --defer-llm and processes all items
+    through the LLM for extraction.
+    
+    Args:
+        queue_file: Path to the queue JSON file
+        output_file: Output CSV file path
+        config: Configuration dict
+        quiet: Suppress output
+        parallel: Use parallel LLM processing
+        max_concurrent: Max concurrent LLM calls
+        
+    Returns:
+        Exit code (0 = success, 1 = failure)
+    """
+    import csv
+    import asyncio
+    import time
+    from pathlib import Path
+    from company_info_scraper.services import ExtractionQueue, LLMExtractionService
+    
+    config = config or {}
+    
+    if not os.path.exists(queue_file):
+        print(f"Error: Queue file not found: {queue_file}")
+        return 1
+    
+    if not quiet:
+        print(f"Loading queue from: {queue_file}")
+    
+    # Load queue
+    queue = ExtractionQueue.load(queue_file)
+    
+    if len(queue) == 0:
+        print("Error: Queue is empty")
+        return 1
+    
+    if not quiet:
+        print(f"Processing {len(queue)} items with LLM...")
+        if parallel:
+            print(f"  Mode: Parallel (max {max_concurrent} concurrent)")
+        else:
+            print(f"  Mode: Sequential")
+    
+    # Initialize LLM service
+    llm_service = LLMExtractionService(
+        model=config.get('ollama_model', 'llama3'),
+        timeout=config.get('ollama_timeout', 90),
+        max_retries=config.get('ollama_max_retries', 3),
+        max_text_length=config.get('max_text_length', 5000)
+    )
+    
+    start_time = time.time()
+    
+    # Process queue
+    if parallel:
+        results = asyncio.run(queue.process_all_parallel(
+            llm_service=llm_service,
+            max_concurrent=max_concurrent
+        ))
+    else:
+        def progress_callback(current, total, url):
+            if not quiet:
+                print(f"  [{current}/{total}] Processing: {url[:50]}...")
+        
+        results = asyncio.run(queue.process_all(
+            llm_service=llm_service,
+            on_progress=progress_callback if not quiet else None
+        ))
+    
+    elapsed_s = time.time() - start_time
+    
+    # Count results
+    successful = sum(1 for r in results if r.extraction_status == 'success')
+    failed = len(results) - successful
+    
+    # Save results to CSV
+    if results:
+        fieldnames = [
+            'url', 'products', 'services', 'customers', 'partnerships',
+            'case_studies', 'extraction_status', 'error'
+        ]
+        
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            for result in results:
+                writer.writerow({
+                    'url': result.url,
+                    'products': result.products,
+                    'services': result.services,
+                    'customers': result.customers,
+                    'partnerships': result.partnerships,
+                    'case_studies': result.case_studies,
+                    'extraction_status': result.extraction_status,
+                    'error': result.error or ''
+                })
+    
+    # Print results
+    if not quiet:
+        print(f"\n{'='*50}")
+        print("Queue Processing Results")
+        print(f"{'='*50}")
+        print(f"  Total items: {len(results)}")
+        print(f"  Successful: {successful}")
+        print(f"  Failed: {failed}")
+        print(f"  Total time: {elapsed_s:.1f}s")
+        if len(results) > 0:
+            print(f"  Avg per item: {elapsed_s/len(results):.1f}s")
+        print(f"\n  Output saved to: {output_file}")
+        print(f"{'='*50}\n")
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Processed queue: {successful}/{len(results)} successful, saved to {output_file}")
+    
+    return 0 if failed == 0 else (2 if successful > 0 else 1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Company Info Scraper - Extract corporate data using agentic AI',
@@ -104,6 +236,10 @@ Examples:
   
   # Run with parallel processing
   python main.py --batch domains.txt --parallel
+  
+  # Deferred LLM mode (fast scrape, process later)
+  python main.py --batch domains.txt --defer-llm
+  python main.py --process-queue /tmp/scraper_queue.json --output results.csv
   
   # Health check
   python main.py --health
@@ -143,7 +279,20 @@ Examples:
         type=str,
         choices=['auto', 'static', 'dynamic'],
         default='auto',
-        help='Force scraper type: auto (detect), static (fast), dynamic (JS-capable)'
+        help='Scraper type (Phase 2: always uses Playwright/dynamic, other options ignored)'
+    )
+    
+    # Queue mode options (PH2-S2: Extraction queue decoupling)
+    parser.add_argument(
+        '--defer-llm',
+        action='store_true',
+        help='Scrape without LLM extraction; queue items for later processing with --process-queue'
+    )
+    parser.add_argument(
+        '--process-queue',
+        type=str,
+        metavar='FILE',
+        help='Process a previously saved queue file with LLM extraction (use after --defer-llm)'
     )
     
     # Configuration
@@ -234,6 +383,17 @@ Examples:
             json_output=args.json
         )
     
+    # Process queue mode (PH2-S2: Extraction queue decoupling)
+    if args.process_queue:
+        return run_process_queue(
+            queue_file=args.process_queue,
+            output_file=args.output,
+            config=config,
+            quiet=args.quiet,
+            parallel=args.parallel,
+            max_concurrent=args.max_concurrent
+        )
+    
     # Validate arguments
     if not args.domain and not args.batch:
         parser.print_help()
@@ -252,8 +412,9 @@ Examples:
         'ollama_timeout': config.get('ollama_timeout', 90),
         'max_text_length': config.get('max_text_length', 5000),
         'max_concurrent': args.max_concurrent,
-        'auto_detect': args.scraper == 'auto',
-        'force_scraper': None if args.scraper == 'auto' else args.scraper,
+        # Phase 2: Universal Playwright - these config options are ignored
+        'auto_detect': False,
+        'force_scraper': 'dynamic',
     }
     
     # Add batch config
@@ -274,7 +435,9 @@ Examples:
                 parallel=args.parallel,
                 max_concurrent=args.max_concurrent,
                 quiet=args.quiet,
-                output_file=args.output
+                output_file=args.output,
+                defer_llm=args.defer_llm,
+                config=config
             )
         else:
             return run_single_mode(
@@ -282,7 +445,9 @@ Examples:
                 domain=args.domain,
                 scraper_type=args.scraper,
                 quiet=args.quiet,
-                output_file=args.output
+                output_file=args.output,
+                defer_llm=args.defer_llm,
+                config=config
             )
             
     except KeyboardInterrupt:
@@ -301,14 +466,45 @@ def run_single_mode(
     domain: str,
     scraper_type: str = 'auto',
     quiet: bool = False,
-    output_file: str = 'output_data.csv'
+    output_file: str = 'output_data.csv',
+    defer_llm: bool = False,
+    config: dict = None
 ) -> int:
-    """Run scraper for a single domain."""
+    """Run scraper for a single domain.
+    
+    Phase 2: Always uses universal Playwright scraper (scraper_type arg ignored).
+    
+    Args:
+        orchestrator: OrchestratorAgent instance
+        domain: Domain to scrape
+        scraper_type: Scraper type (ignored, always uses Playwright)
+        quiet: Suppress output
+        output_file: Output CSV file path
+        defer_llm: If True, skip LLM extraction and queue for later
+        config: Configuration dict
+    """
     import csv
     from pathlib import Path
+    from datetime import datetime
+    from company_info_scraper.services import ExtractionQueue, get_global_queue, reset_global_queue
+    
+    config = config or {}
     
     if not quiet:
-        print(f"Processing domain: {domain}")
+        if defer_llm:
+            print(f"Processing domain (defer LLM): {domain}")
+        else:
+            print(f"Processing domain: {domain}")
+    
+    if defer_llm:
+        # Queue mode: scrape without LLM extraction
+        return run_single_mode_deferred(
+            orchestrator=orchestrator,
+            domain=domain,
+            scraper_type=scraper_type,
+            quiet=quiet,
+            config=config
+        )
     
     result = orchestrator.execute({
         'domain': domain,
@@ -335,6 +531,69 @@ def run_single_mode(
         return 0
     else:
         print(f"\n✗ Scraping failed: {result.get('error')}")
+        return 1
+
+
+def run_single_mode_deferred(
+    orchestrator: OrchestratorAgent,
+    domain: str,
+    scraper_type: str = 'auto',
+    quiet: bool = False,
+    config: dict = None
+) -> int:
+    """Run scraper for a single domain with deferred LLM extraction (PH2-S2).
+    
+    Scrapes the domain and queues raw text for later LLM processing.
+    Phase 2: Always uses Playwright (universal scraping).
+    """
+    from datetime import datetime
+    from company_info_scraper.services import ExtractionQueue
+    import asyncio
+    
+    config = config or {}
+    queue = ExtractionQueue()
+    
+    try:
+        if not quiet:
+            print(f"  Scraper: dynamic (Playwright)")
+        
+        # Phase 2: Use Playwright for all scraping
+        from company_info_scraper.agents.scraping_agent import ScrapingAgent
+        scraping_agent = ScrapingAgent(config=config)
+        result = scraping_agent.execute({'domain': domain})
+        
+        if not result.get('success'):
+            raise Exception(result.get('error', 'Scraping failed'))
+        
+        items = result.get('raw_data', [])
+        
+        # Queue items for later LLM processing
+        for item in items:
+            url = item.get('url', domain)
+            raw_text = item.get('raw_text', '')
+            if raw_text:
+                queue.add(url, raw_text)
+        
+        # Save queue to file
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        queue_dir = config.get('extraction_queue_dir', '/tmp')
+        queue_file = f"{queue_dir}/scraper_queue_{timestamp}.json"
+        saved_path = queue.save(queue_file)
+        
+        if not quiet:
+            print(f"\n✓ Scraping completed (LLM deferred)!")
+            print(f"  Domain: {domain}")
+            print(f"  Items queued: {len(queue)}")
+            print(f"  Queue saved to: {saved_path}")
+            print(f"\n  To process with LLM later:")
+            print(f"    python main.py --process-queue {saved_path} --output results.csv")
+        
+        return 0
+        
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Deferred scraping failed for {domain}: {e}")
+        print(f"\n✗ Scraping failed: {e}")
         return 1
 
 
@@ -365,7 +624,7 @@ def save_domain_results(
         return saved_files
     
     fieldnames = [
-        'case_studies', 'customers', 'partnerships', 'products',
+        'case_studies', 'customers', 'partnerships', 'products', 'services',
         'raw_text', 'url', 'extraction_status'
     ]
     
@@ -409,12 +668,27 @@ def run_batch_mode(
     parallel: bool = False,
     max_concurrent: int = 5,
     quiet: bool = False,
-    output_file: str = 'output_data.csv'
+    output_file: str = 'output_data.csv',
+    defer_llm: bool = False,
+    config: dict = None
 ) -> int:
-    """Run scraper for multiple domains from a file."""
+    """Run scraper for multiple domains from a file.
+    
+    Args:
+        orchestrator: OrchestratorAgent instance
+        batch_file: Path to file with domains (one per line)
+        parallel: Use parallel processing
+        max_concurrent: Max concurrent domains
+        quiet: Suppress output
+        output_file: Output CSV file path
+        defer_llm: If True, skip LLM extraction and queue for later
+        config: Configuration dict
+    """
     import csv
     from pathlib import Path
     global _shutdown_requested
+    
+    config = config or {}
     
     if not os.path.exists(batch_file):
         print(f"Error: Batch file not found: {batch_file}")
@@ -433,7 +707,9 @@ def run_batch_mode(
     
     if not quiet:
         print(f"Processing {len(domains)} domains...")
-        if parallel:
+        if defer_llm:
+            print(f"  Mode: Deferred LLM (scrape only, process later)")
+        elif parallel:
             print(f"  Mode: Parallel (max {max_concurrent} concurrent)")
         else:
             print(f"  Mode: Sequential")
@@ -443,7 +719,17 @@ def run_batch_mode(
         print("Shutdown requested before processing started")
         return 130
     
-    # Execute batch
+    if defer_llm:
+        # Deferred LLM mode: scrape without extraction
+        return run_batch_mode_deferred(
+            domains=domains,
+            parallel=parallel,
+            max_concurrent=max_concurrent,
+            quiet=quiet,
+            config=config
+        )
+    
+    # Execute batch with LLM extraction
     if parallel:
         result = orchestrator.execute_batch_parallel(domains, max_concurrent)
     else:
@@ -483,6 +769,105 @@ def run_batch_mode(
     if result['failed'] > 0:
         return 2 if result['successful'] > 0 else 1
     return 0
+
+
+def run_batch_mode_deferred(
+    domains: list,
+    parallel: bool = False,
+    max_concurrent: int = 5,
+    quiet: bool = False,
+    config: dict = None
+) -> int:
+    """Run batch scraping with deferred LLM extraction (PH2-S2).
+    
+    Scrapes all domains and saves raw text to a queue file for later LLM processing.
+    """
+    from datetime import datetime
+    from company_info_scraper.services import ExtractionQueue
+    from company_info_scraper.spiders import StaticScraper
+    import asyncio
+    import time
+    
+    config = config or {}
+    queue = ExtractionQueue()
+    scraper = StaticScraper()
+    
+    start_time = time.time()
+    successful = 0
+    failed = 0
+    
+    async def scrape_domain(domain: str) -> int:
+        """Scrape a single domain and add to queue."""
+        nonlocal successful, failed
+        try:
+            items = await scraper.scrape(domain)
+            count = 0
+            for item in items:
+                url = item.get('url', domain)
+                raw_text = item.get('raw_text', '')
+                if raw_text:
+                    queue.add(url, raw_text)
+                    count += 1
+            if count > 0:
+                successful += 1
+                if not quiet:
+                    print(f"  ✓ {domain}: {count} pages queued")
+            else:
+                failed += 1
+                if not quiet:
+                    print(f"  ✗ {domain}: no content found")
+            return count
+        except Exception as e:
+            failed += 1
+            if not quiet:
+                print(f"  ✗ {domain}: {e}")
+            return 0
+    
+    async def scrape_all_parallel():
+        """Scrape all domains in parallel."""
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def scrape_with_semaphore(domain: str):
+            async with semaphore:
+                return await scrape_domain(domain)
+        
+        await asyncio.gather(*[scrape_with_semaphore(d) for d in domains])
+    
+    async def scrape_all_sequential():
+        """Scrape all domains sequentially."""
+        for domain in domains:
+            await scrape_domain(domain)
+    
+    # Run scraping
+    if parallel:
+        asyncio.run(scrape_all_parallel())
+    else:
+        asyncio.run(scrape_all_sequential())
+    
+    elapsed_s = time.time() - start_time
+    
+    # Save queue to file
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    queue_dir = config.get('extraction_queue_dir', '/tmp')
+    queue_file = f"{queue_dir}/scraper_queue_{timestamp}.json"
+    saved_path = queue.save(queue_file)
+    
+    # Print results
+    if not quiet:
+        print(f"\n{'='*50}")
+        print("Batch Scraping Results (LLM Deferred)")
+        print(f"{'='*50}")
+        print(f"  Total domains: {len(domains)}")
+        print(f"  Successful: {successful}")
+        print(f"  Failed: {failed}")
+        print(f"  Items queued: {len(queue)}")
+        print(f"  Total time: {elapsed_s:.1f}s")
+        print(f"\n  Queue saved to: {saved_path}")
+        print(f"\n  To process with LLM later:")
+        print(f"    python main.py --process-queue {saved_path} --output results.csv")
+        print(f"{'='*50}\n")
+    
+    return 0 if failed == 0 else (2 if successful > 0 else 1)
 
 
 def save_batch_results(

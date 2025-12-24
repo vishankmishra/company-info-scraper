@@ -9,10 +9,16 @@ ollama_max_retries: 3 # Max retries for failed LLM calls
 max_text_length: 5000 # Maximum characters to send to LLM per page
 download_delay: 0.5 # Delay between requests (seconds)
 depth_limit: 1 # Maximum crawl depth (0 = root only, 1 = root + one level)
-auto_detect: true # Auto-detect static vs dynamic sites
+auto_detect: true # Phase 2: Ignored, always uses Playwright (universal scraping)
 
 # Output Configuration
 output_file: output_data.csv # Output CSV file path
+
+# Extraction Queue Configuration (PH2-S2: Deferred LLM processing)
+extraction_queue_dir: /tmp # Directory for queue files when using --defer-llm
+# Example workflow:
+#   python main.py --batch domains.txt --defer-llm
+#   python main.py --process-queue /tmp/scraper_queue_TIMESTAMP.json --output results.csv
 
 # Logging Configuration (PH6-S3)
 log_level: INFO # Options: DEBUG, INFO, WARNING, ERROR

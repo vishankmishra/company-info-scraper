@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 class ExtractionResult:
     """Result of LLM extraction."""
     products: str
+    services: str
     customers: str
     partnerships: str
     case_studies: str
@@ -81,13 +82,15 @@ class LLMExtractionService:
 
 Extract the following information:
 
-1. **Products/Services**: List all products, services, or solutions mentioned. Include specific product names, service categories, and key features.
+1. **Products**: List all physical or software products mentioned. Include specific product names, product lines, and tangible offerings.
 
-2. **Customer Names**: Extract all customer/client names, company names, or testimonials that mention specific customers. Look for phrases like "our clients", "customers include", "trusted by", case studies with customer names, or testimonials.
+2. **Services**: List all services, consulting offerings, professional services, or intangible solutions mentioned. Include service categories and service types.
 
-3. **Partnerships**: Identify all partnerships, strategic alliances, integrations, or collaborations mentioned. Look for partner logos, partner names, integration partners, or strategic alliance announcements.
+3. **Customer Names**: Extract all customer/client names, company names, or testimonials that mention specific customers. Look for phrases like "our clients", "customers include", "trusted by", case studies with customer names, or testimonials.
 
-4. **Case Studies**: Extract case study titles, customer success stories, detailed use cases, or detailed customer examples with outcomes/results.
+4. **Partnerships**: Identify all partnerships, strategic alliances, integrations, or collaborations mentioned. Look for partner logos, partner names, integration partners, or strategic alliance announcements.
+
+5. **Case Studies**: Extract case study titles, customer success stories, detailed use cases, or detailed customer examples with outcomes/results.
 
 Website Text:
 {text[:self.max_text_length]}
@@ -95,6 +98,7 @@ Website Text:
 IMPORTANT: Return ONLY a valid JSON object with this exact structure:
 {{
     "products": ["product1", "product2"] or "N/A",
+    "services": ["service1", "service2"] or "N/A",
     "customers": ["customer1", "customer2"] or "N/A",
     "partnerships": ["partner1", "partner2"] or "N/A",
     "case_studies": ["case study 1", "case study 2"] or "N/A"
@@ -137,8 +141,8 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
 
     def _parse_json_response(self, ai_content: str) -> dict:
         """Parse JSON from LLM response, handling common formatting issues."""
-        # Try to find JSON with "products" key
-        json_match = re.search(r'\{[^{}]*"products"[^{}]*\}', ai_content, re.DOTALL)
+        # Try to find JSON with "products" or "services" key
+        json_match = re.search(r'\{[^{}]*"(?:products|services)"[^{}]*\}', ai_content, re.DOTALL)
         if not json_match:
             # Try to find JSON block between ```json and ```
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', ai_content, re.DOTALL)
@@ -176,9 +180,9 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
         else:
             return str(field_value)
 
-    def _determine_status(self, products: str, customers: str, partnerships: str, case_studies: str) -> str:
+    def _determine_status(self, products: str, services: str, customers: str, partnerships: str, case_studies: str) -> str:
         """Determine extraction status based on field values."""
-        fields = [products, customers, partnerships, case_studies]
+        fields = [products, services, customers, partnerships, case_studies]
         for value in fields:
             if value and not str(value).startswith('N/A'):
                 return 'success'
@@ -228,6 +232,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.warning(f"Empty text content for {url}")
             return ExtractionResult(
                 products="N/A",
+                services="N/A",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -246,12 +251,13 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             
             # Format fields
             products = self._format_field(extracted_data.get('products', 'N/A'))
+            services = self._format_field(extracted_data.get('services', 'N/A'))
             customers = self._format_field(extracted_data.get('customers', 'N/A'))
             partnerships = self._format_field(extracted_data.get('partnerships', 'N/A'))
             case_studies = self._format_field(extracted_data.get('case_studies', 'N/A'))
             
             # Determine status
-            status = self._determine_status(products, customers, partnerships, case_studies)
+            status = self._determine_status(products, services, customers, partnerships, case_studies)
             
             if status == 'success':
                 logger.info(f"Successfully extracted data for {url}")
@@ -260,6 +266,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             
             return ExtractionResult(
                 products=products,
+                services=services,
                 customers=customers,
                 partnerships=partnerships,
                 case_studies=case_studies,
@@ -270,6 +277,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"Ollama failed after {self.max_retries} retries for {url}: {e}")
             return ExtractionResult(
                 products="N/A (Timeout)",
+                services="N/A (Timeout)",
                 customers="N/A (Timeout)",
                 partnerships="N/A (Timeout)",
                 case_studies="N/A (Timeout)",
@@ -280,6 +288,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"JSON parsing error for {url}: {e}")
             return ExtractionResult(
                 products="N/A (JSON Error)",
+                services="N/A (JSON Error)",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -290,6 +299,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"Extraction error for {url}: {e}")
             return ExtractionResult(
                 products=f"N/A (Error: {str(e)[:50]})",
+                services="N/A",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -312,6 +322,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.warning(f"Empty text content for {url}")
             return ExtractionResult(
                 products="N/A",
+                services="N/A",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -330,12 +341,13 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             
             # Format fields
             products = self._format_field(extracted_data.get('products', 'N/A'))
+            services = self._format_field(extracted_data.get('services', 'N/A'))
             customers = self._format_field(extracted_data.get('customers', 'N/A'))
             partnerships = self._format_field(extracted_data.get('partnerships', 'N/A'))
             case_studies = self._format_field(extracted_data.get('case_studies', 'N/A'))
             
             # Determine status
-            status = self._determine_status(products, customers, partnerships, case_studies)
+            status = self._determine_status(products, services, customers, partnerships, case_studies)
             
             if status == 'success':
                 logger.info(f"Successfully extracted data for {url}")
@@ -344,6 +356,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             
             return ExtractionResult(
                 products=products,
+                services=services,
                 customers=customers,
                 partnerships=partnerships,
                 case_studies=case_studies,
@@ -354,6 +367,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"Ollama failed after {self.max_retries} retries for {url}: {e}")
             return ExtractionResult(
                 products="N/A (Timeout)",
+                services="N/A (Timeout)",
                 customers="N/A (Timeout)",
                 partnerships="N/A (Timeout)",
                 case_studies="N/A (Timeout)",
@@ -364,6 +378,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"JSON parsing error for {url}: {e}")
             return ExtractionResult(
                 products="N/A (JSON Error)",
+                services="N/A (JSON Error)",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -374,6 +389,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             logger.error(f"Extraction error for {url}: {e}")
             return ExtractionResult(
                 products=f"N/A (Error: {str(e)[:50]})",
+                services="N/A",
                 customers="N/A",
                 partnerships="N/A",
                 case_studies="N/A",
@@ -453,6 +469,7 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             if isinstance(result, Exception):
                 extraction_results.append(ExtractionResult(
                     products="N/A (Error)",
+                    services="N/A (Error)",
                     customers="N/A",
                     partnerships="N/A",
                     case_studies="N/A",

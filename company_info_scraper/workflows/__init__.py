@@ -26,17 +26,21 @@ from .scrape_workflow import (
     ScrapeWorkflowConfig,
     ScrapeWorkflowResult,
     ScrapeWorkflow,
+    DomainScrapeResult,
     create_scrape_workflow,
     run_scrape_workflow,
     run_scrape_workflow_async,
+    create_adk_scrape_agent,
 )
 
 __all__ = [
     'ScrapeWorkflowConfig',
     'ScrapeWorkflowResult',
     'ScrapeWorkflow',
+    'DomainScrapeResult',
     'create_scrape_workflow',
     'run_scrape_workflow',
     'run_scrape_workflow_async',
+    'create_adk_scrape_agent',
 ]
 

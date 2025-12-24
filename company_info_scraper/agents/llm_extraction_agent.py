@@ -135,8 +135,9 @@ class LLMExtractionAgent(BaseAgent):
         
         self.logger.info(f"Extracting data from text (length: {len(text_content)}) for URL: {url}")
         
-        # Run async service synchronously
-        result = asyncio.run(self.service.extract(text_content, url=url))
+        # Phase 2 Fix: Use extract_sync() to avoid asyncio.run() blocking
+        # asyncio.run() creates a new event loop which can conflict with Twisted
+        result = self.service.extract_sync(text_content, url=url)
         
         # Convert ExtractionResult to agent response format
         success = result.status == 'success'

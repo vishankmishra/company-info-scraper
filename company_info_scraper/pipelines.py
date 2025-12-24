@@ -12,7 +12,13 @@ from company_info_scraper.services.llm_service import LLMExtractionService
 
 
 class CompanyInfoScraperPipeline:
+    """Pass-through pipeline that collects items in spider for in-memory access."""
+    
     def process_item(self, item, spider):
+        # Collect item in spider's memory for direct access (Phase 2 fix)
+        if hasattr(spider, 'collected_items'):
+            from itemadapter import ItemAdapter
+            spider.collected_items.append(dict(ItemAdapter(item)))
         return item
 
 
@@ -60,6 +66,7 @@ class QueueingPipeline:
         
         # Set placeholder values (actual extraction happens later)
         adapter['products'] = "QUEUED"
+        adapter['services'] = "QUEUED"
         adapter['customers'] = "QUEUED"
         adapter['partnerships'] = "QUEUED"
         adapter['case_studies'] = "QUEUED"
@@ -69,10 +76,9 @@ class QueueingPipeline:
 
 
 class LLMExtractionPipeline:
-    """Pipeline that performs inline LLM extraction using LLMExtractionService.
-    
-    PH2-S4: Refactored to use LLMExtractionService as single source of truth.
-    All extraction logic (prompt, parsing, retry, status) is in the service.
+    """
+    Pipeline that performs inline LLM extraction using LLMExtractionService.
+    updated to be async to prevent event loop deadlocks.
     """
     
     def __init__(self):
@@ -81,7 +87,6 @@ class LLMExtractionPipeline:
     @classmethod
     def from_crawler(cls, crawler):
         pipeline = cls()
-        # Initialize service with settings
         pipeline.service = LLMExtractionService(
             model=crawler.settings.get('OLLAMA_MODEL', 'llama3'),
             timeout=crawler.settings.get('OLLAMA_TIMEOUT', 90),
@@ -90,23 +95,25 @@ class LLMExtractionPipeline:
         )
         return pipeline
     
-    def process_item(self, item, spider):
-        """Extract data from item using LLMExtractionService."""
+    # CHANGED: Added 'async' keyword
+    async def process_item(self, item, spider):
+        """Extract data from item using LLMExtractionService asynchronously."""
         adapter = ItemAdapter(item)
         url = adapter.get('url', 'unknown')
         text_content = adapter.get('raw_text', '')
         
-        # Use synchronous extraction (avoids asyncio/Twisted conflicts)
-        result = self.service.extract_sync(text_content, url=url)
+        # CHANGED: Await the async method directly. 
+        # Do NOT use extract_sync().
+        result = await self.service.extract(text_content, url=url)
         
         # Apply results to item
         adapter['products'] = result.products
+        adapter['services'] = result.services
         adapter['customers'] = result.customers
         adapter['partnerships'] = result.partnerships
         adapter['case_studies'] = result.case_studies
         adapter['extraction_status'] = result.status
         
-        # Log result
         if result.status == 'success':
             spider.logger.info(f"Successfully extracted data for {url}")
         else:

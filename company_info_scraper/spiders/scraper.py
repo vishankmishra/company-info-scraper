@@ -30,44 +30,103 @@ class FullPageSpider(scrapy.Spider):
     def __init__(self, domain=None, *args, **kwargs):
         super(FullPageSpider, self).__init__(*args, **kwargs)
         
+        # #region agent log
+        import json
+        with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"scraper.py:__init__","message":"Spider __init__ called","data":{"domain":domain},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H7"}) + '\n')
+        # #endregion
+        
         # Accept domain via CLI argument: scrapy crawl fullpage -a domain=example.com
-        if domain:
-            # Normalize domain input
-            domain = domain.strip()
-            if not domain.startswith(('http://', 'https://')):
-                domain = 'https://' + domain
-            
-            # Remove trailing slash
-            domain = domain.rstrip('/')
-            
-            self.start_urls = [domain]
-            self.base_domain = urlparse(domain).netloc
-        else:
-            # Default fallback (for backward compatibility)
-            self.start_urls = ['https://www.tasconnect.com/']
-            self.base_domain = 'www.tasconnect.com'
+        if not domain:
+            raise ValueError("Domain is required. Please provide a domain parameter.")
+        
+        # Normalize domain input
+        domain = domain.strip()
+        if not domain.startswith(('http://', 'https://')):
+            domain = 'https://' + domain
+        
+        # Remove trailing slash
+        domain = domain.rstrip('/')
+        
+        self.start_urls = [domain]
+        self.base_domain = urlparse(domain).netloc
         
         # Track page count for logging
         self.pages_scraped = 0
+        # Phase 2 Fix: Collect items in memory for direct access (avoid CSV read/write)
+        self.collected_items = []
         self.logger.info(f"Starting Playwright scraper for domain: {self.start_urls[0]}")
 
-    async def start(self):
-        """Async start method (replaces deprecated start_requests)."""
+        # #region agent log
+        with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"scraper.py:__init__:end","message":"Spider __init__ complete","data":{"start_urls":self.start_urls},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H7"}) + '\n')
+        # #endregion
+
+    def start_requests(self):
+        """Generate initial requests with Playwright enabled."""
+        # #region agent log
+        import json
+        with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"scraper.py:start_requests:entry","message":"start_requests called","data":{"start_urls":self.start_urls},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H1"}) + '\n')
+        # #endregion
+        
+        self.logger.info(f"start_requests called with start_urls: {self.start_urls}")
         for url in self.start_urls:
+            self.logger.info(f"Generating request for: {url}")
             # Enable Playwright with persistent context for browser reuse
             # Context name "persistent" is defined in settings.py PLAYWRIGHT_CONTEXTS
-            yield scrapy.Request(
+            request = scrapy.Request(
                 url, 
                 meta=dict(
                     playwright=True,
                     playwright_include_page=True,
                     playwright_context="persistent",  # Reuse browser context
                 ),
-                callback=self.parse
+                callback=self.parse,
+                errback=self.errback
             )
+            self.logger.info(f"Yielding request: {request}")
+            
+            # #region agent log
+            with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location":"scraper.py:start_requests:yield","message":"About to yield request","data":{"url":url,"meta_keys":list(request.meta.keys())},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H2"}) + '\n')
+            # #endregion
+            
+            yield request
+    
+    def errback(self, failure):
+        """Handle request errors."""
+        # #region agent log
+        import json
+        with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"scraper.py:errback","message":"Request error occurred","data":{"failure_type":str(type(failure.value)),"failure_str":str(failure.value)[:200]},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H5"}) + '\n')
+        # #endregion
+        
+        self.logger.error(f"Request failed: {failure}")
+        self.logger.error(f"Failure value: {failure.value}")
+        self.logger.error(f"Failure traceback: {failure.getTraceback()}")
 
 
     async def parse(self, response):
+        # #region agent log
+        import json
+        with open('/home/vishank/projects/company-info-scraper/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"scraper.py:parse:entry","message":"parse callback invoked","data":{"url":str(response.url),"status":response.status},"timestamp":__import__('time').time()*1000,"sessionId":"debug-session","hypothesisId":"H2"}) + '\n')
+        # #endregion
+        
+        # Handle non-200 status codes
+        if response.status != 200:
+            self.logger.error(
+                f"Failed to fetch {response.url}: HTTP {response.status}. "
+                f"{'Site may be blocking automated access.' if response.status == 403 else ''}"
+            )
+            # Yield an empty item with error info
+            item = CompanyInfoScraperItem()
+            item['url'] = response.url
+            item['raw_text'] = f"ERROR: HTTP {response.status} - Unable to access page"
+            yield item
+            return
+        
         page = response.meta["playwright_page"]
         depth = response.meta.get('depth', 0)
         

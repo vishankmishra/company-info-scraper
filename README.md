@@ -324,25 +324,68 @@ company-info-scraper/
 
 ## Testing
 
-### Run Tests
+### Test Suite Overview
+
+The project includes comprehensive test coverage:
+
+- **Unit Tests**: Component-level tests (no network/LLM required)
+- **Integration Tests**: Service integration tests
+- **E2E Tests**: Full pipeline validation with 5 test domains
+- **Edge Cases**: Timeout handling, errors, mixed site types
+
+### Quick Test Runner
 
 ```bash
-# Quick tests (no network/LLM required)
+# Run all tests (recommended)
+./run_tests.sh
+
+# Unit tests only (fast, no network)
+./run_tests.sh --unit-only
+
+# E2E tests only
+./run_tests.sh --e2e-only --quick
+
+# Full test options
+./run_tests.sh --help
+```
+
+### Individual Test Suites
+
+```bash
+# Health check (verify Ollama, config, dependencies)
+python main.py --health --json
+
+# Quick integration tests (no network/LLM)
 python tests/test_integration.py --quick
 
-# Full integration tests
+# Full integration tests (with network + LLM)
 python tests/test_integration.py --full
+
+# E2E validation test (5 domains, >60% success target)
+python tests/test_e2e_simple.py
+python tests/test_e2e_simple.py --quick  # 2 domains only
 
 # Using pytest
 pytest tests/ -v
 pytest tests/test_integration.py -v -m "not slow"
+pytest tests/test_e2e_validation.py -v
 ```
 
-### Validate Output
+### Test Validation Criteria
 
-```bash
-python validate_output.py output_data.csv
-```
+**E2E Tests validate:**
+- ✓ >60% extraction success rate across test domains
+- ✓ Data quality (non-N/A fields in extracted data)
+- ✓ Mixed static/dynamic site handling
+- ✓ Timeout and error handling
+- ✓ LLM extraction accuracy
+
+**Test Domains:**
+1. `example.com` - Simple static site (baseline)
+2. `httpbin.org` - Static site with product info
+3. `stripe.com` - Dynamic FinTech site
+4. `shopify.com` - Enterprise e-commerce platform
+5. `mongodb.com` - Tech company with rich data
 
 ## Troubleshooting
 

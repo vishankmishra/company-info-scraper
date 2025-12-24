@@ -17,10 +17,11 @@ ADDONS = {}
 DEPTH_LIMIT=1  # Only crawl root page (depth 0) and one level deep (depth 1)
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
-#USER_AGENT = "company_info_scraper (+http://www.yourdomain.com)"
+# Use a realistic user agent to avoid bot detection
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Obey robots.txt rules (set to False for faster crawling, but less respectful)
-ROBOTSTXT_OBEY = True  # Keep True to respect robots.txt, but this can slow things down
+# Phase 2: Disable robots.txt with universal Playwright (causes hang with scrapy-playwright)
+ROBOTSTXT_OBEY = False  # Playwright handler can't handle robots.txt requests properly
 
 # Concurrency and throttling settings
 #CONCURRENT_REQUESTS = 16
@@ -34,17 +35,22 @@ RANDOMIZE_DOWNLOAD_DELAY = False  # Disable randomization for consistent timing
 # Disable Telnet Console (enabled by default)
 #TELNETCONSOLE_ENABLED = False
 
-# Override the default request headers:
-#DEFAULT_REQUEST_HEADERS = {
-#    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-#    "Accept-Language": "en",
-#}
+# Override the default request headers to look more like a real browser
+DEFAULT_REQUEST_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 # Enable or disable spider middlewares
 # See https://docs.scrapy.org/en/latest/topics/spider-middleware.html
-#SPIDER_MIDDLEWARES = {
-#    "company_info_scraper.middlewares.CompanyInfoScraperSpiderMiddleware": 543,
-#}
+SPIDER_MIDDLEWARES = {
+    # Disable HttpErrorMiddleware to handle 403 errors gracefully
+    'scrapy.spidermiddlewares.httperror.HttpErrorMiddleware': None,
+}
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
@@ -60,8 +66,11 @@ RANDOMIZE_DOWNLOAD_DELAY = False  # Disable randomization for consistent timing
 
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
+# Phase 2 Fix: Use CompanyInfoScraperPipeline (pass-through) instead of LLMExtractionPipeline
+# This avoids double LLM extraction (pipeline + orchestrator)
+# Extraction is now handled ONLY by OrchestratorAgent after scraping completes
 ITEM_PIPELINES = {
-   "company_info_scraper.pipelines.LLMExtractionPipeline": 300,
+   "company_info_scraper.pipelines.CompanyInfoScraperPipeline": 300,
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)
@@ -143,6 +152,6 @@ FEED_URI = "output_data.csv"
 
 # Ollama Configuration (can be overridden via config.yaml or environment variables)
 OLLAMA_MODEL = 'llama3'
-OLLAMA_TIMEOUT = 90  # 90 seconds - LLM needs 45-90s for complex pages
-OLLAMA_MAX_RETRIES = 3  # Retry failed LLM calls up to 3 times with exponential backoff
+OLLAMA_TIMEOUT = 30  # 30 seconds - fail fast to avoid blocking pipeline
+OLLAMA_MAX_RETRIES = 1  # Single retry to avoid long waits (was 3)
 MAX_TEXT_LENGTH = 5000  # Reduced from 8000 to 5000 for faster LLM processing

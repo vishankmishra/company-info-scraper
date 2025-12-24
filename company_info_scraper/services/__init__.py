@@ -19,7 +19,8 @@ from .site_detector import (
     SiteType,
     DetectionResult,
     detect_site_type,
-    detect_site_type_sync
+    detect_site_type_sync,
+    # Phase 3: Corporate detection (kept for backward compatibility)
 )
 from .batch_processor import (
     BatchProcessor,

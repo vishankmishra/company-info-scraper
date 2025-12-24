@@ -56,9 +56,9 @@ class OrchestratorAgent(BaseAgent):
         # Site detector for dual-path routing
         self.site_detector = SiteDetector()
         
-        # Config options
-        self.auto_detect = self.config.get('auto_detect', True)  # Auto-detect site type
-        self.force_scraper = self.config.get('force_scraper', None)  # 'static' or 'dynamic'
+        # Phase 2: Universal Playwright - always use dynamic scraper
+        self.auto_detect = False
+        self.force_scraper = 'dynamic'
         
         # PH4-S1: Batch processor for parallel processing
         self.max_concurrent = self.config.get('max_concurrent', 5)
@@ -188,17 +188,40 @@ class OrchestratorAgent(BaseAgent):
         
         self.logger.info(f"Starting orchestration for domain: {domain}")
         
-        # Step 1: Determine scraper type
-        if self.force_scraper:
-            scraper_type = self.force_scraper
-            self.logger.info(f"Using forced scraper type: {scraper_type}")
-        elif requested_scraper != 'auto':
-            scraper_type = requested_scraper
-            self.logger.info(f"Using requested scraper type: {scraper_type}")
-        elif self.auto_detect:
-            scraper_type = self._detect_site_type(domain)
-        else:
-            scraper_type = 'dynamic'  # Default to Playwright
+        # Phase 3: Corporate site detection
+        detection_result = self.site_detector.detect_corporate_sync(domain)
+        site_type = detection_result.site_type.value
+        
+        self.logger.info(
+            f"Site classification: {site_type} "
+            f"(confidence: {detection_result.confidence:.2f}, signals: {detection_result.signal_count})"
+        )
+        
+        # Skip non-corporate sites
+        if site_type != 'corporate':
+            self.logger.info(f"Skipping non-corporate site: {domain} (type: {site_type})")
+            return {
+                'success': True,
+                'domain': domain,
+                'site_type': site_type,
+                'records': [{
+                    'url': domain,
+                    'site_type': site_type,
+                    'extraction_status': 'skipped',
+                    'products': 'N/A',
+                    'services': 'N/A',
+                    'customers': 'N/A',
+                    'partnerships': 'N/A',
+                    'case_studies': 'N/A',
+                    'raw_text': f'Skipped: {site_type} site (reasons: {"; ".join(detection_result.reasons[:3])})'
+                }],
+                'records_count': 1,
+                'scraper_type': 'none'
+            }
+        
+        # Phase 2: Universal Playwright - always use dynamic scraper
+        scraper_type = 'dynamic'
+        self.logger.info(f"Using universal Playwright scraper for {domain}")
         
         # Step 2: Scraping with appropriate scraper
         scraping_result = self.scraping_agent.execute({
@@ -245,9 +268,14 @@ class OrchestratorAgent(BaseAgent):
             'scraping_success': scraping_result.get('success')
         }, success=True)
         
+        # Phase 3: Add site_type to results
+        for record in extracted_results:
+            record['site_type'] = site_type
+        
         return {
             'success': True,
             'domain': domain,
+            'site_type': site_type,
             'scraper_type': scraper_type,
             'records': extracted_results,
             'records_count': len(extracted_results),
@@ -440,11 +468,11 @@ class OrchestratorAgent(BaseAgent):
             f"max_concurrent={concurrent}"
         )
         
-        # Initialize batch processor with config
+        # Phase 2: Initialize batch processor with universal Playwright
         processor = BatchProcessor(
             max_concurrent=concurrent,
-            auto_detect=self.auto_detect,
-            default_scraper=self.force_scraper or 'static',
+            auto_detect=False,  # Phase 2: Always Playwright
+            default_scraper='dynamic',  # Phase 2: Always Playwright
             llm_timeout=self.config.get('ollama_timeout', 90),
             llm_max_retries=self.config.get('max_retries', 3)
         )
@@ -531,7 +559,7 @@ class OrchestratorAgent(BaseAgent):
             return None
         
         try:
-            from google.adk import LlmAgent
+            from google.adk.agents import LlmAgent
             
             # Get tools from all agents
             all_tools = []
