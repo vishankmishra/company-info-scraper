@@ -638,61 +638,56 @@ class BatchProcessor:
         self,
         batch_result: BatchResult,
         output_file: str = 'batch_output.csv',
-        save_domain_files: bool = True
+        save_domain_files: bool = False
     ) -> List[str]:
-        """Save batch results to CSV file(s).
-        
-        Saves results to the main output file AND creates domain-specific
-        CSV files for each domain (e.g., grab_output_data.csv).
+        """Save batch results to main CSV file only.
         
         Args:
             batch_result: The batch processing result
             output_file: Main output CSV file path
-            save_domain_files: Also save domain-specific files (default: True)
+            save_domain_files: Ignored (kept for compatibility, always False)
             
         Returns:
-            List of paths to saved files
+            List of paths to saved files (single file)
         """
         saved_files = []
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
         
+        from datetime import datetime
+        
         fieldnames = [
-            'url', 'domain', 'products', 'services', 'customers', 
-            'partnerships', 'case_studies', 'extraction_status',
-            'scraper_type', 'elapsed_ms'
+            'website', 'timestamp', 'url', 'products', 'services', 'customers', 
+            'partnerships', 'case_studies', 'raw_text', 'extraction_status'
         ]
         
-        # Write to main output file (append if exists)
+        # Collect all fieldnames from records
+        for domain_result in batch_result.results:
+            for record in domain_result.records:
+                for key in record.keys():
+                    if key not in fieldnames:
+                        fieldnames.append(key)
+        
+        # Write to main output file (append if exists, never delete)
         file_exists = Path(output_file).exists()
+        timestamp = datetime.now().isoformat()
+        
         with open(output_file, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             if not file_exists:
                 writer.writeheader()
             
             for domain_result in batch_result.results:
                 for record in domain_result.records:
+                    # Add website and timestamp fields if not present
                     row = {
-                        'domain': domain_result.domain,
-                        'scraper_type': domain_result.scraper_type,
-                        'elapsed_ms': domain_result.elapsed_ms,
+                        'website': domain_result.domain,
+                        'timestamp': timestamp,
                         **record
                     }
                     writer.writerow(row)
         
         logger.info(f"Saved batch results to {output_file}")
         saved_files.append(output_file)
-        
-        # Save domain-specific files
-        if save_domain_files:
-            output_dir = Path(output_file).parent
-            for domain_result in batch_result.results:
-                domain_file = self._save_domain_csv(
-                    domain_result, 
-                    output_dir,
-                    fieldnames
-                )
-                if domain_file:
-                    saved_files.append(domain_file)
         
         return saved_files
     

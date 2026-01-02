@@ -230,6 +230,12 @@ class ScrapingAgent(BaseAgent):
         # Get project settings to pass to subprocess
         settings = get_project_settings()
         
+        # Create domain-specific result file to avoid cross-domain contamination
+        import tempfile
+        result_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        result_file_path = result_file.name
+        result_file.close()
+        
         # Create temporary script file for subprocess
         script_content = f'''
 import sys
@@ -280,9 +286,9 @@ result = {{
     'items': spider_ref[0].collected_items if spider_ref[0] and hasattr(spider_ref[0], 'collected_items') else []
 }}
 
-# Write results to temp file
-output_file = "{self.output_file}"
-with open(output_file + '.result.json', 'w') as f:
+# Write results to domain-specific temp file
+result_file_path = r"{result_file_path}"
+with open(result_file_path, 'w') as f:
     json.dump(result, f)
 '''
         
@@ -294,13 +300,7 @@ with open(output_file + '.result.json', 'w') as f:
         try:
             self.logger.info(f"Starting crawler for {domain} in subprocess")
             
-            # Clear any existing output file
-            if os.path.exists(self.output_file):
-                try:
-                    os.remove(self.output_file)
-                except Exception:
-                    pass
-            
+            # Clear in-memory items to prevent stale data
             self._collected_items.clear()
             
             # Run script in subprocess
@@ -316,10 +316,9 @@ with open(output_file + '.result.json', 'w') as f:
                 self.logger.error(f"Subprocess failed: {result.stderr}")
                 raise RuntimeError(f"Crawler subprocess failed: {result.stderr}")
             
-            # Read results from temp file
-            result_file = self.output_file + '.result.json'
-            if os.path.exists(result_file):
-                with open(result_file, 'r') as f:
+            # Read results from domain-specific temp file
+            if os.path.exists(result_file_path):
+                with open(result_file_path, 'r') as f:
                     subprocess_result = json.load(f)
                 
                 # Get items from result
@@ -327,9 +326,12 @@ with open(output_file + '.result.json', 'w') as f:
                 self._collected_items.extend(raw_data)
                 
                 # Clean up result file
-                os.remove(result_file)
+                try:
+                    os.remove(result_file_path)
+                except Exception as e:
+                    self.logger.warning(f"Failed to clean up result file {result_file_path}: {e}")
             else:
-                self.logger.warning("No result file found from subprocess")
+                self.logger.warning(f"No result file found from subprocess: {result_file_path}")
                 raw_data = []
             
         finally:

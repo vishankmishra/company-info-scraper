@@ -268,9 +268,10 @@ class OrchestratorAgent(BaseAgent):
             'scraping_success': scraping_result.get('success')
         }, success=True)
         
-        # Phase 3: Add site_type to results
+        # Phase 3: Add site_type and website to results (timestamp added in save function)
         for record in extracted_results:
             record['site_type'] = site_type
+            record['website'] = domain
         
         return {
             'success': True,
@@ -350,6 +351,10 @@ class OrchestratorAgent(BaseAgent):
                 extracted_results.append(merged_result)
             else:
                 extracted_results.append(record)
+        
+        # Add website field to all records
+        for record in extracted_results:
+            record['website'] = domain
         
         return {
             'success': True,

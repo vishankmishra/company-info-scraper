@@ -526,8 +526,7 @@ def run_single_mode(
             print(f"  Domain: {result['domain']}")
             print(f"  Scraper: {result.get('scraper_type', 'unknown')}")
             print(f"  Records: {result['records_count']}")
-            for f in saved_files:
-                print(f"  Output: {f}")
+            print(f"  Output: {output_file}")
         return 0
     else:
         print(f"\n✗ Scraping failed: {result.get('error')}")
@@ -604,7 +603,7 @@ def save_domain_results(
     main_output_file: str = 'output_data.csv'
 ) -> list:
     """
-    Save scraping results to both main CSV and domain-specific CSV.
+    Save scraping results to main CSV file only.
     
     Args:
         domain: The scraped domain
@@ -613,7 +612,7 @@ def save_domain_results(
         main_output_file: Path to main output file (appends)
         
     Returns:
-        List of saved file paths
+        List of saved file paths (single file)
     """
     import csv
     from pathlib import Path
@@ -623,8 +622,18 @@ def save_domain_results(
     if not records:
         return saved_files
     
+    from datetime import datetime
+    
+    # Add website and timestamp fields to each record
+    timestamp = datetime.now().isoformat()
+    for record in records:
+        if 'website' not in record:
+            record['website'] = domain
+        if 'timestamp' not in record:
+            record['timestamp'] = timestamp
+    
     fieldnames = [
-        'case_studies', 'customers', 'partnerships', 'products', 'services',
+        'website', 'timestamp', 'case_studies', 'customers', 'partnerships', 'products', 'services',
         'raw_text', 'url', 'extraction_status'
     ]
     
@@ -634,7 +643,7 @@ def save_domain_results(
             if key not in fieldnames:
                 fieldnames.append(key)
     
-    # 1. Append to main output file
+    # Append to main output file (never delete, always append)
     main_file_exists = Path(main_output_file).exists()
     with open(main_output_file, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
@@ -644,20 +653,8 @@ def save_domain_results(
             writer.writerow(record)
     saved_files.append(main_output_file)
     
-    # 2. Save to domain-specific file (overwrites)
-    domain_name = extract_domain_name(domain)
-    output_dir = Path(main_output_file).parent
-    domain_file = output_dir / f"{domain_name}_output_data.csv"
-    
-    with open(domain_file, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-        writer.writeheader()
-        for record in records:
-            writer.writerow(record)
-    saved_files.append(str(domain_file))
-    
     logger = logging.getLogger(__name__)
-    logger.info(f"Saved results to: {main_output_file} and {domain_file}")
+    logger.info(f"Saved results to: {main_output_file}")
     
     return saved_files
 
@@ -875,14 +872,14 @@ def save_batch_results(
     main_output_file: str = 'output_data.csv'
 ) -> list:
     """
-    Save batch results to both main CSV and domain-specific CSVs.
+    Save batch results to main CSV file only.
     
     Args:
         result: Batch processing result dictionary
         main_output_file: Path to main output file
         
     Returns:
-        List of saved file paths
+        List of saved file paths (single file)
     """
     import csv
     from pathlib import Path
@@ -893,9 +890,11 @@ def save_batch_results(
     if not results:
         return saved_files
     
+    from datetime import datetime
+    
     fieldnames = [
-        'case_studies', 'customers', 'partnerships', 'products',
-        'raw_text', 'url', 'extraction_status', 'domain', 'scraper_type'
+        'website', 'timestamp', 'case_studies', 'customers', 'partnerships', 'products', 'services',
+        'raw_text', 'url', 'extraction_status'
     ]
     
     # Collect all fieldnames from records
@@ -908,8 +907,10 @@ def save_batch_results(
     output_dir = Path(main_output_file).parent
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 1. Append to main output file
+    # Append to main output file (never delete, always append)
     main_file_exists = Path(main_output_file).exists()
+    timestamp = datetime.now().isoformat()
+    
     with open(main_output_file, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         if not main_file_exists:
@@ -917,44 +918,20 @@ def save_batch_results(
         
         for domain_result in results:
             domain = domain_result.get('domain', 'unknown')
-            scraper_type = domain_result.get('scraper_type', 'unknown')
             
             for record in domain_result.get('records', []):
+                # Add website and timestamp fields if not present
                 row = {
-                    'domain': domain,
-                    'scraper_type': scraper_type,
+                    'website': domain,
+                    'timestamp': timestamp,
                     **record
                 }
                 writer.writerow(row)
     
     saved_files.append(main_output_file)
     
-    # 2. Save domain-specific files
-    for domain_result in results:
-        records = domain_result.get('records', [])
-        if not records:
-            continue
-        
-        domain = domain_result.get('domain', 'unknown')
-        domain_name = extract_domain_name(domain)
-        domain_file = output_dir / f"{domain_name}_output_data.csv"
-        
-        with open(domain_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            
-            for record in records:
-                row = {
-                    'domain': domain,
-                    'scraper_type': domain_result.get('scraper_type', 'unknown'),
-                    **record
-                }
-                writer.writerow(row)
-        
-        saved_files.append(str(domain_file))
-    
     logger = logging.getLogger(__name__)
-    logger.info(f"Saved batch results to {len(saved_files)} files")
+    logger.info(f"Saved batch results to {main_output_file}")
     
     return saved_files
 

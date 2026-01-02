@@ -170,99 +170,160 @@ class FullPageSpider(scrapy.Spider):
         # Then handle link following AFTER yielding item
 
 
-        # 3. Follow relevant links (Depth controlled by settings.py)
+        # 3. Follow relevant links (Phase 4: Smart Link Prioritization)
         # Maximum depth of 1: Start from root (depth 0), follow links one level deep (depth 1)
-        # Limit to most important pages to finish quickly
+        # Prioritize high-value pages: customers, partners, case-studies
         
         # Only follow links if we're at depth 0 (root page)
-        
         if depth == 0:
-            # We're on the root page - follow only the most important links
-            # Prioritize: about, partners, customers, case studies
-            priority_keywords = ['about', 'partner', 'customer', 'case-study', 'case_study']
-            secondary_keywords = ['product', 'service', 'solution']
+            # Phase 4: Priority-based link selection
+            # P1 (CRITICAL): customers, clients, case-studies, success-stories, testimonials
+            # P2 (HIGH): partners, partnerships, integrations, alliances, ecosystem
+            # P3 (MEDIUM): about, about-us, company, who-we-are
+            # P4 (MEDIUM): products, services, solutions, offerings
+            # P5 (LOW): news, blog, resources
+            # SKIP: careers, jobs, legal, privacy, terms, login, signup
             
-            links_followed = 0
-            max_links_to_follow = 3  # Limit to 3 links max for very fast crawling (finish in seconds)
+            p1_patterns = ['/customers', '/clients', '/case-studies', '/case_studies', 
+                          '/success-stories', '/success_stories', '/testimonials', 
+                          '/our-customers', '/our-clients']
+            p2_patterns = ['/partners', '/partnerships', '/integrations', '/alliances', 
+                          '/ecosystem', '/technology-partners']
+            p3_patterns = ['/about', '/about-us', '/about_us', '/company', '/who-we-are', 
+                          '/who_we_are', '/team']
+            p4_patterns = ['/products', '/services', '/solutions', '/offerings']
+            p5_patterns = ['/news', '/blog', '/resources', '/press']
+            skip_patterns = ['/careers', '/jobs', '/legal', '/privacy', '/terms', 
+                            '/login', '/signup', '/sign-up', '/register', '/docs', 
+                            '/documentation', '/api', '/contact']
             
-            # First pass: priority links
-            for href in response.css("a::attr(href)").getall():
-                if links_followed >= max_links_to_follow:
-                    break
-                    
-                # Skip non-HTTP links
-                if not href or not href.startswith(('http://', 'https://', '/')):
+            # Extract all links and classify them
+            all_links = []
+            nav_links = set()  # Track navigation links (more valuable)
+            
+            # First, identify navigation links (in nav, header, or nav class)
+            nav_selectors = [
+                'nav a::attr(href)',
+                'header nav a::attr(href)',
+                '.nav a::attr(href)',
+                '.navigation a::attr(href)',
+                '[role="navigation"] a::attr(href)'
+            ]
+            for selector in nav_selectors:
+                for href in response.css(selector).getall():
+                    if href:
+                        nav_links.add(href)
+            
+            # Extract all links from page
+            all_raw_hrefs = response.css("a::attr(href)").getall()
+            self.logger.debug(f"[Phase 4] Found {len(all_raw_hrefs)} raw hrefs from CSS selector")
+            
+            for href in all_raw_hrefs:
+                if not href:
+                    continue
+                # Skip non-HTTP links (javascript:, mailto:, tel:, #anchors, etc.)
+                href_clean = href.strip()
+                if not href_clean.startswith(('http://', 'https://', '/')):
+                    self.logger.debug(f"[Phase 4] Skipping non-HTTP link: {href_clean[:50]}")
                     continue
                 
                 # Convert relative URLs to absolute
                 if href.startswith('/'):
-                    href = urljoin(response.url, href)
+                    absolute_href = urljoin(response.url, href)
+                else:
+                    absolute_href = href
                 
                 # Only follow links within the same domain
-                parsed_href = urlparse(href)
+                parsed_href = urlparse(absolute_href)
                 if parsed_href.netloc and parsed_href.netloc != self.base_domain:
                     continue
                 
-                href_lower = href.lower()
+                # Skip fragments and query params for matching
+                path = parsed_href.path.lower()
                 
-                # Prioritize important pages
-                if any(k in href_lower for k in priority_keywords):
-                    try:
-                        yield response.follow(
-                            href, 
-                            self.parse, 
-                            meta=dict(
-                                playwright=True, 
-                                playwright_include_page=True,
-                                playwright_context="persistent",  # Reuse browser context
-                                depth=depth + 1  # Track depth
-                            )
-                        )
-                        links_followed += 1
-                        self.logger.debug(f"Following priority link (depth {depth + 1}): {href}")
-                    except ValueError as e:
-                        self.logger.warning(f"Skipping invalid URL: {href} - {e}")
-                        continue
+                # Check if should skip
+                if any(skip in path for skip in skip_patterns):
+                    continue
+                
+                # Determine priority
+                priority = None
+                if any(p1 in path for p1 in p1_patterns):
+                    priority = 1
+                elif any(p2 in path for p2 in p2_patterns):
+                    priority = 2
+                elif any(p3 in path for p3 in p3_patterns):
+                    priority = 3
+                elif any(p4 in path for p4 in p4_patterns):
+                    priority = 4
+                elif any(p5 in path for p5 in p5_patterns):
+                    priority = 5
+                else:
+                    priority = 99  # Low priority, only if we have room
+                
+                is_nav_link = href in nav_links
+                all_links.append({
+                    'href': absolute_href,
+                    'path': path,
+                    'priority': priority,
+                    'is_nav': is_nav_link
+                })
             
-            # Second pass: secondary links if we haven't reached the limit
-            if links_followed < max_links_to_follow:
-                for href in response.css("a::attr(href)").getall():
-                    if links_followed >= max_links_to_follow:
+            # Sort by priority (lower is better), then prefer nav links
+            all_links.sort(key=lambda x: (x['priority'], not x['is_nav']))
+            
+            # Log discovered links
+            self.logger.info(f"[Phase 4] Discovered {len(all_links)} internal links:")
+            for link in all_links[:10]:  # Log top 10
+                priority_label = f"P{link['priority']}" if link['priority'] < 99 else "LOW"
+                nav_label = "NAV" if link['is_nav'] else "body"
+                self.logger.info(f"  {priority_label} [{nav_label}] {link['href']}")
+            
+            # Select links: Guarantee P1 if they exist, then fill up to 4 total
+            max_links = 4
+            selected_links = []
+            p1_links = [l for l in all_links if l['priority'] == 1]
+            other_links = [l for l in all_links if l['priority'] > 1 and l['priority'] < 99]
+            
+            # Strategy: Include all P1 links (up to max), then fill remaining slots
+            if p1_links:
+                # Include all P1 links (they're critical)
+                for link in p1_links[:max_links]:
+                    selected_links.append(link)
+                self.logger.info(f"[Phase 4] Selected {len(selected_links)} P1 (CRITICAL) links")
+            
+            # Fill remaining slots with other priorities
+            remaining_slots = max_links - len(selected_links)
+            if remaining_slots > 0:
+                for link in other_links:
+                    if len(selected_links) >= max_links:
                         break
-                    
-                    if not href or not href.startswith(('http://', 'https://', '/')):
-                        continue
-                    
-                    if href.startswith('/'):
-                        href = urljoin(response.url, href)
-                    
-                    parsed_href = urlparse(href)
-                    if parsed_href.netloc and parsed_href.netloc != self.base_domain:
-                        continue
-                    
-                    href_lower = href.lower()
-                    
-                    # Skip if already followed (priority links)
-                    if any(k in href_lower for k in priority_keywords):
-                        continue
-                    
-                    if any(k in href_lower for k in secondary_keywords):
-                        try:
-                            yield response.follow(
-                                href, 
-                                self.parse, 
-                                meta=dict(
-                                    playwright=True, 
-                                    playwright_include_page=True,
-                                    playwright_context="persistent",  # Reuse browser context
-                                    depth=depth + 1
-                                )
-                            )
-                            links_followed += 1
-                            self.logger.debug(f"Following secondary link (depth {depth + 1}): {href}")
-                        except ValueError as e:
-                            self.logger.warning(f"Skipping invalid URL: {href} - {e}")
-                            continue
+                    # Avoid duplicates
+                    if link['href'] not in [s['href'] for s in selected_links]:
+                        selected_links.append(link)
+            
+            # Log selected links
+            self.logger.info(f"[Phase 4] Selected {len(selected_links)} links to crawl:")
+            for link in selected_links:
+                priority_label = f"P{link['priority']}" if link['priority'] < 99 else "LOW"
+                nav_label = "NAV" if link['is_nav'] else "body"
+                self.logger.info(f"  → {priority_label} [{nav_label}] {link['href']}")
+            
+            # Yield requests for selected links
+            for link in selected_links:
+                try:
+                    yield response.follow(
+                        link['href'],
+                        self.parse,
+                        meta=dict(
+                            playwright=True,
+                            playwright_include_page=True,
+                            playwright_context="persistent",
+                            depth=depth + 1
+                        )
+                    )
+                except ValueError as e:
+                    self.logger.warning(f"[Phase 4] Skipping invalid URL: {link['href']} - {e}")
+                    continue
         else:
             # We're already at depth 1 or deeper - don't follow any more links
             self.logger.debug(f"At depth {depth}, not following additional links")
@@ -284,4 +345,4 @@ class FullPageSpider(scrapy.Spider):
                     f"Took {elapsed:.1f}s (page {self.pages_scraped}, context reused)"
                 )
         except Exception as e:
-            self.logger.debug(f"Error closing page: {e}")
+            self.logger.debug(f"Error closing page: {e}") 

@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
 
 import ollama
+from pydantic import ValidationError
+
+from company_info_scraper.models.extraction_schema import ExtractionSchema
 
 logger = logging.getLogger(__name__)
 
@@ -70,72 +73,140 @@ class LLMExtractionService:
         max_retries: int = 3,
         max_text_length: int = 5000
     ):
+        # Phase 5: Prefer qwen2.5:7b-instruct, fallback gracefully
         self.model = model
+        if model == 'llama3':
+            # Check if qwen2.5:7b-instruct is available (don't fail if not)
+            try:
+                test_client = ollama.Client(timeout=2)
+                # Just check if model exists, don't actually call it
+                models = test_client.list()
+                available_models = [m.get('name', '') for m in models.get('models', [])]
+                if any('qwen2.5' in m and 'instruct' in m for m in available_models):
+                    # Find the exact qwen2.5:7b-instruct model name
+                    qwen_model = next((m for m in available_models if 'qwen2.5' in m and 'instruct' in m), None)
+                    if qwen_model:
+                        self.model = qwen_model
+                        logger.info(f"Using {qwen_model} model")
+            except Exception:
+                logger.info(f"qwen2.5:7b-instruct not available, using {model}")
+        
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_text_length = max_text_length
         self.client = ollama.Client(timeout=timeout)
     
-    def _build_prompt(self, text: str) -> str:
-        """Build the extraction prompt for the LLM."""
-        return f"""You are a data extraction specialist. Analyze the following website text and extract structured information.
+    def _build_prompt(self, text: str, is_retry: bool = False, is_empty_retry: bool = False) -> str:
+        """Build the extraction prompt for the LLM (Phase 5: Field-specific instructions)."""
+        
+        if is_empty_retry:
+            retry_instruction = """
+CRITICAL: The previous extraction returned no results. Please look more carefully for:
+- ANY company names mentioned (potential customers or partners)
+- ANY named individuals with company affiliations (testimonials)
+- ANY logos or brand mentions
+- ANY product or service names
 
-Extract the following information:
+Even partial information is valuable. Only return empty arrays if truly nothing is found.
+"""
+        elif is_retry:
+            retry_instruction = "CRITICAL: Fix the JSON format. Return ONLY valid JSON, no explanations."
+        else:
+            retry_instruction = ""
+        
+        return f"""You are a corporate information extraction specialist. Extract the following fields from the website text.
 
-1. **Products**: List all physical or software products mentioned. Include specific product names, product lines, and tangible offerings.
+CRITICAL INSTRUCTIONS:
+- Return ONLY a valid JSON object, no explanations
+- Use empty array [] if information is not found — do NOT use "N/A" for arrays
+- Do NOT guess or hallucinate — only extract information that clearly exists in the text
 
-2. **Services**: List all services, consulting offerings, professional services, or intangible solutions mentioned. Include service categories and service types.
+EXTRACTION FIELDS:
 
-3. **Customer Names**: Extract all customer/client names, company names, or testimonials that mention specific customers. Look for phrases like "our clients", "customers include", "trusted by", case studies with customer names, or testimonials.
+1. products (array of strings)
+   - Product names, software names, service offerings
+   - Include specific product lines, not generic descriptions
+   - Example: ["Zoho CRM", "Zoho Books", "Zoho Mail"]
 
-4. **Partnerships**: Identify all partnerships, strategic alliances, integrations, or collaborations mentioned. Look for partner logos, partner names, integration partners, or strategic alliance announcements.
+2. services (array of strings)
+   - Consulting, support, professional services
+   - Different from products — services are things done FOR customers
+   - Example: ["Implementation Services", "Technical Support", "Training"]
 
-5. **Case Studies**: Extract case study titles, customer success stories, detailed use cases, or detailed customer examples with outcomes/results.
+3. customers (array of strings)
+   - ONLY extract explicitly named customer/client companies
+   - Look for: "trusted by", "our customers include", "client list", logos with company names
+   - Do NOT include: generic terms like "enterprises" or "Fortune 500"
+   - Do NOT include: partner names (they go in partnerships)
+   - Example: ["Acme Corp", "TechCorp Inc", "Global Industries"]
 
-Website Text:
+4. partnerships (array of strings)
+   - Integration partners, technology partners, strategic alliances
+   - Look for: "partners include", "integrations with", "certified partner"
+   - Do NOT include: customer names
+   - Example: ["Salesforce", "Microsoft", "Google Cloud"]
+
+5. case_studies (array of strings)
+   - Named customer success stories with specific outcomes
+   - Format: "Company Name: brief description of what was achieved"
+   - Look for: "case study", "success story", "how X achieved Y"
+   - Do NOT include: generic testimonials without company names
+   - Example: ["Acme Corp: 50% efficiency improvement", "TechCorp: Reduced costs by 30%"]
+
+{retry_instruction}
+
+WEBSITE TEXT:
 {text[:self.max_text_length]}
 
-IMPORTANT: Return ONLY a valid JSON object with this exact structure:
+Return JSON:
 {{
-    "products": ["product1", "product2"] or "N/A",
-    "services": ["service1", "service2"] or "N/A",
-    "customers": ["customer1", "customer2"] or "N/A",
-    "partnerships": ["partner1", "partner2"] or "N/A",
-    "case_studies": ["case study 1", "case study 2"] or "N/A"
-}}
+    "products": [],
+    "services": [],
+    "customers": [],
+    "partnerships": [],
+    "case_studies": []
+}}"""
 
-Use arrays for multiple items, or "N/A" if no information found. Be thorough and extract all relevant information."""
-
-    def _call_ollama_sync(self, prompt: str) -> str:
+    def _call_ollama_sync(self, prompt: str, use_json_mode: bool = True) -> str:
         """Synchronous Ollama call (will be run in thread pool)."""
+        # Phase 5: Use JSON mode if available (qwen2.5, llama3.1+)
+        options = {}
+        if use_json_mode and self.model in ['qwen2.5:7b-instruct', 'llama3.1', 'llama3.2']:
+            options['format'] = 'json'
+        
         response = self.client.chat(
             model=self.model,
-            messages=[{'role': 'user', 'content': prompt}]
+            messages=[{'role': 'user', 'content': prompt}],
+            options=options if options else None
         )
         return response['message']['content']
 
-    async def _call_ollama_with_retry(self, prompt: str, url: str) -> str:
-        """Call Ollama with retry logic and exponential backoff (async)."""
-        last_exception = None
+    async def _call_ollama_with_retry(self, prompt: str, url: str, use_json_mode: bool = True) -> str:
+        """Call Ollama with retry logic and exponential backoff (async).
         
-        for attempt in range(1, self.max_retries + 1):
+        Phase 5: Reduced retries to 1 (single attempt) to avoid timeout multiplication.
+        Validation retries handle errors at a higher level.
+        """
+        last_exception = None
+        # Phase 5: Use only 1 retry to avoid timeout multiplication with validation retries
+        max_attempts = min(self.max_retries, 2)  # Max 2 attempts total
+        
+        for attempt in range(1, max_attempts + 1):
             try:
                 # Run blocking Ollama call in thread pool
-                content = await asyncio.to_thread(self._call_ollama_sync, prompt)
+                content = await asyncio.to_thread(self._call_ollama_sync, prompt, use_json_mode)
                 return content
             except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
                 last_exception = e
-                if attempt < self.max_retries:
-                    backoff = 2 ** attempt  # Exponential backoff: 2s, 4s, 8s
+                if attempt < max_attempts:
+                    backoff = 2  # Short backoff: 2s
                     logger.warning(
-                        f"Retry {attempt}/{self.max_retries} for {url} after {type(e).__name__}. "
-                        f"Waiting {backoff}s before retry..."
+                        f"Ollama retry {attempt}/{max_attempts - 1} for {url} after {type(e).__name__}. "
+                        f"Waiting {backoff}s..."
                     )
                     await asyncio.sleep(backoff)
                 else:
-                    logger.error(
-                        f"All {self.max_retries} retries failed for {url}. Last error: {e}"
-                    )
+                    logger.error(f"Ollama failed for {url}: {e}")
         
         raise last_exception
 
@@ -167,6 +238,13 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             json_str = re.sub(r',\s*}', '}', json_str)  # Remove trailing commas
             json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas in arrays
             return json.loads(json_str)
+    
+    def _validate_extraction(self, extracted_data: dict) -> ExtractionSchema:
+        """Validate extraction output against Pydantic schema (Phase 5)."""
+        try:
+            return ExtractionSchema(**extracted_data)
+        except ValidationError as e:
+            raise ValueError(f"Validation failed: {e}")
 
     def _format_field(self, field_value) -> str:
         """Format field value for output."""
@@ -181,52 +259,44 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
             return str(field_value)
 
     def _determine_status(self, products: str, services: str, customers: str, partnerships: str, case_studies: str) -> str:
-        """Determine extraction status based on field values."""
+        """Determine extraction status based on field values (Phase 5)."""
         fields = [products, services, customers, partnerships, case_studies]
         for value in fields:
             if value and not str(value).startswith('N/A'):
                 return 'success'
-        return 'failure'
+        return 'failure'  # Keep 'failure' for backward compatibility
 
-    def _call_ollama_with_retry_sync(self, prompt: str, url: str) -> str:
+    def _call_ollama_with_retry_sync(self, prompt: str, url: str, use_json_mode: bool = True) -> str:
         """Call Ollama with retry logic and exponential backoff (synchronous).
         
-        Used by extract_sync() for Scrapy pipeline compatibility.
+        Phase 5: Reduced retries to 1 (single attempt) to avoid timeout multiplication.
+        Validation retries handle errors at a higher level.
         """
         last_exception = None
+        # Phase 5: Use only 1 retry to avoid timeout multiplication with validation retries
+        max_attempts = min(self.max_retries, 2)  # Max 2 attempts total
         
-        for attempt in range(1, self.max_retries + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
-                return self._call_ollama_sync(prompt)
+                return self._call_ollama_sync(prompt, use_json_mode)
             except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
                 last_exception = e
-                if attempt < self.max_retries:
-                    backoff = 2 ** attempt  # Exponential backoff: 2s, 4s, 8s
+                if attempt < max_attempts:
+                    backoff = 2  # Short backoff: 2s
                     logger.warning(
-                        f"Retry {attempt}/{self.max_retries} for {url} after {type(e).__name__}. "
-                        f"Waiting {backoff}s before retry..."
+                        f"Ollama retry {attempt}/{max_attempts - 1} for {url} after {type(e).__name__}. "
+                        f"Waiting {backoff}s..."
                     )
                     time.sleep(backoff)
                 else:
-                    logger.error(
-                        f"All {self.max_retries} retries failed for {url}. Last error: {e}"
-                    )
+                    logger.error(f"Ollama failed for {url}: {e}")
         
         raise last_exception
 
     def extract_sync(self, text: str, url: str = "unknown") -> ExtractionResult:
-        """Extract structured data from text using LLM (synchronous).
+        """Extract structured data from text using LLM (synchronous, Phase 5: with validation)."""
+        start_time = time.time()
         
-        Use this method in Scrapy pipelines or other sync contexts
-        where asyncio event loop conflicts with Twisted.
-        
-        Args:
-            text: The raw text content to extract from
-            url: The source URL (for logging purposes)
-            
-        Returns:
-            ExtractionResult with extracted fields and status
-        """
         # Handle empty text
         if not text or not text.strip():
             logger.warning(f"Empty text content for {url}")
@@ -237,86 +307,138 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
                 partnerships="N/A",
                 case_studies="N/A",
                 status="failure",
-                error="Empty text content"
+                error="Empty text content",
+                url=url,
+                elapsed_ms=0
             )
         
-        prompt = self._build_prompt(text)
+        text_length = len(text)
+        is_empty_retry = False
         
-        try:
-            # Call Ollama with sync retry logic
-            ai_content = self._call_ollama_with_retry_sync(prompt, url)
-            
-            # Parse JSON response
-            extracted_data = self._parse_json_response(ai_content)
-            
-            # Format fields
-            products = self._format_field(extracted_data.get('products', 'N/A'))
-            services = self._format_field(extracted_data.get('services', 'N/A'))
-            customers = self._format_field(extracted_data.get('customers', 'N/A'))
-            partnerships = self._format_field(extracted_data.get('partnerships', 'N/A'))
-            case_studies = self._format_field(extracted_data.get('case_studies', 'N/A'))
-            
-            # Determine status
-            status = self._determine_status(products, services, customers, partnerships, case_studies)
-            
-            if status == 'success':
-                logger.info(f"Successfully extracted data for {url}")
-            else:
-                logger.warning(f"Extraction failure for {url}: all fields are N/A")
-            
-            return ExtractionResult(
-                products=products,
-                services=services,
-                customers=customers,
-                partnerships=partnerships,
-                case_studies=case_studies,
-                status=status
-            )
-            
-        except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
-            logger.error(f"Ollama failed after {self.max_retries} retries for {url}: {e}")
-            return ExtractionResult(
-                products="N/A (Timeout)",
-                services="N/A (Timeout)",
-                customers="N/A (Timeout)",
-                partnerships="N/A (Timeout)",
-                case_studies="N/A (Timeout)",
-                status="failure",
-                error=f"Timeout: {str(e)[:50]}"
-            )
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error for {url}: {e}")
-            return ExtractionResult(
-                products="N/A (JSON Error)",
-                services="N/A (JSON Error)",
-                customers="N/A",
-                partnerships="N/A",
-                case_studies="N/A",
-                status="failure",
-                error=f"JSON Error: {str(e)[:50]}"
-            )
-        except Exception as e:
-            logger.error(f"Extraction error for {url}: {e}")
-            return ExtractionResult(
-                products=f"N/A (Error: {str(e)[:50]})",
-                services="N/A",
-                customers="N/A",
-                partnerships="N/A",
-                case_studies="N/A",
-                status="failure",
-                error=str(e)[:100]
-            )
+        # Phase 5: Main extraction with validation retry
+        for validation_attempt in range(3):  # Max 2 retries = 3 total attempts
+            try:
+                # Build prompt
+                prompt = self._build_prompt(text, is_retry=(validation_attempt > 0), is_empty_retry=is_empty_retry)
+                
+                # Call Ollama
+                ai_content = self._call_ollama_with_retry_sync(prompt, url, use_json_mode=True)
+                
+                # Parse JSON
+                extracted_data = self._parse_json_response(ai_content)
+                
+                # Phase 5: Validate with Pydantic
+                try:
+                    validated = self._validate_extraction(extracted_data)
+                    validated_dict = validated.to_dict()
+                    
+                    # Check for suspicious empty results
+                    all_empty = all(
+                        not validated_dict.get(field) or len(validated_dict.get(field, [])) == 0
+                        for field in ['products', 'services', 'customers', 'partnerships', 'case_studies']
+                    )
+                    
+                    if all_empty and text_length > 1000 and not is_empty_retry:
+                        logger.warning(f"Suspicious empty extraction for {url} (text length: {text_length}), retrying...")
+                        is_empty_retry = True
+                        continue
+                    
+                    # Format fields
+                    products = self._format_field(validated_dict.get('products', []))
+                    services = self._format_field(validated_dict.get('services', []))
+                    customers = self._format_field(validated_dict.get('customers', []))
+                    partnerships = self._format_field(validated_dict.get('partnerships', []))
+                    case_studies = self._format_field(validated_dict.get('case_studies', []))
+                    
+                    # Determine status
+                    status = 'empty_but_checked' if (all_empty and is_empty_retry) else self._determine_status(
+                        products, services, customers, partnerships, case_studies
+                    )
+                    
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    
+                    if status == 'success':
+                        logger.info(f"Extracted data for {url}")
+                    elif status == 'empty_but_checked':
+                        logger.info(f"Empty extraction verified for {url} (checked twice)")
+                    
+                    return ExtractionResult(
+                        products=products,
+                        services=services,
+                        customers=customers,
+                        partnerships=partnerships,
+                        case_studies=case_studies,
+                        status=status,
+                        url=url,
+                        elapsed_ms=elapsed_ms
+                    )
+                    
+                except ValueError as ve:
+                    # Validation failed - retry with fix JSON prompt
+                    if validation_attempt < 2:
+                        logger.warning(f"Validation failed for {url}, retry {validation_attempt + 1}/2: {ve}")
+                        continue
+                    else:
+                        logger.error(f"Validation failed after 2 retries for {url}: {ve}")
+                        return ExtractionResult(
+                            products="N/A",
+                            services="N/A",
+                            customers="N/A",
+                            partnerships="N/A",
+                            case_studies="N/A",
+                            status="failed",
+                            error=f"Validation failed: {str(ve)[:50]}",
+                            url=url,
+                            elapsed_ms=(time.time() - start_time) * 1000
+                        )
+                        
+            except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
+                logger.error(f"Ollama failed for {url}: {e}")
+                return ExtractionResult(
+                    products="N/A",
+                    services="N/A",
+                    customers="N/A",
+                    partnerships="N/A",
+                    case_studies="N/A",
+                    status="failed",
+                    error=f"Ollama error: {str(e)[:50]}",
+                    url=url,
+                    elapsed_ms=(time.time() - start_time) * 1000
+                )
+            except json.JSONDecodeError as e:
+                if validation_attempt < 2:
+                    logger.warning(f"JSON parse error for {url}, retry {validation_attempt + 1}/2")
+                    continue
+                logger.error(f"JSON parsing error for {url}: {e}")
+                return ExtractionResult(
+                    products="N/A",
+                    services="N/A",
+                    customers="N/A",
+                    partnerships="N/A",
+                    case_studies="N/A",
+                    status="failed",
+                    error=f"JSON error: {str(e)[:50]}",
+                    url=url,
+                    elapsed_ms=(time.time() - start_time) * 1000
+                )
+        
+        # Should not reach here
+        return ExtractionResult(
+            products="N/A",
+            services="N/A",
+            customers="N/A",
+            partnerships="N/A",
+            case_studies="N/A",
+            status="failed",
+            error="Max retries exceeded",
+            url=url,
+            elapsed_ms=(time.time() - start_time) * 1000
+        )
 
     async def extract(self, text: str, url: str = "unknown") -> ExtractionResult:
-        """Extract structured data from text using LLM (asynchronous).
+        """Extract structured data from text using LLM (asynchronous, Phase 5: with validation)."""
+        start_time = time.time()
         
-        Args:
-            text: The raw text content to extract from
-            url: The source URL (for logging purposes)
-            
-        Returns:
-            ExtractionResult with extracted fields and status
-        """
         # Handle empty text
         if not text or not text.strip():
             logger.warning(f"Empty text content for {url}")
@@ -327,75 +449,135 @@ Use arrays for multiple items, or "N/A" if no information found. Be thorough and
                 partnerships="N/A",
                 case_studies="N/A",
                 status="failure",
-                error="Empty text content"
+                error="Empty text content",
+                url=url,
+                elapsed_ms=0
             )
         
-        prompt = self._build_prompt(text)
+        text_length = len(text)
+        is_empty_retry = False
         
-        try:
-            # Call Ollama with async retry logic
-            ai_content = await self._call_ollama_with_retry(prompt, url)
-            
-            # Parse JSON response
-            extracted_data = self._parse_json_response(ai_content)
-            
-            # Format fields
-            products = self._format_field(extracted_data.get('products', 'N/A'))
-            services = self._format_field(extracted_data.get('services', 'N/A'))
-            customers = self._format_field(extracted_data.get('customers', 'N/A'))
-            partnerships = self._format_field(extracted_data.get('partnerships', 'N/A'))
-            case_studies = self._format_field(extracted_data.get('case_studies', 'N/A'))
-            
-            # Determine status
-            status = self._determine_status(products, services, customers, partnerships, case_studies)
-            
-            if status == 'success':
-                logger.info(f"Successfully extracted data for {url}")
-            else:
-                logger.warning(f"Extraction failure for {url}: all fields are N/A")
-            
-            return ExtractionResult(
-                products=products,
-                services=services,
-                customers=customers,
-                partnerships=partnerships,
-                case_studies=case_studies,
-                status=status
-            )
-            
-        except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
-            logger.error(f"Ollama failed after {self.max_retries} retries for {url}: {e}")
-            return ExtractionResult(
-                products="N/A (Timeout)",
-                services="N/A (Timeout)",
-                customers="N/A (Timeout)",
-                partnerships="N/A (Timeout)",
-                case_studies="N/A (Timeout)",
-                status="failure",
-                error=f"Timeout: {str(e)[:50]}"
-            )
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error for {url}: {e}")
-            return ExtractionResult(
-                products="N/A (JSON Error)",
-                services="N/A (JSON Error)",
-                customers="N/A",
-                partnerships="N/A",
-                case_studies="N/A",
-                status="failure",
-                error=f"JSON Error: {str(e)[:50]}"
-            )
-        except Exception as e:
-            logger.error(f"Extraction error for {url}: {e}")
-            return ExtractionResult(
-                products=f"N/A (Error: {str(e)[:50]})",
-                services="N/A",
-                customers="N/A",
-                partnerships="N/A",
-                case_studies="N/A",
-                status="failure",
-                error=str(e)[:100]
-            )
+        # Phase 5: Main extraction with validation retry
+        for validation_attempt in range(3):  # Max 2 retries = 3 total attempts
+            try:
+                # Build prompt (use empty retry prompt if needed)
+                prompt = self._build_prompt(text, is_retry=(validation_attempt > 0), is_empty_retry=is_empty_retry)
+                
+                # Call Ollama
+                ai_content = await self._call_ollama_with_retry(prompt, url, use_json_mode=True)
+                
+                # Parse JSON
+                extracted_data = self._parse_json_response(ai_content)
+                
+                # Phase 5: Validate with Pydantic
+                try:
+                    validated = self._validate_extraction(extracted_data)
+                    validated_dict = validated.to_dict()
+                    
+                    # Check for suspicious empty results (Phase 5)
+                    all_empty = all(
+                        not validated_dict.get(field) or len(validated_dict.get(field, [])) == 0
+                        for field in ['products', 'services', 'customers', 'partnerships', 'case_studies']
+                    )
+                    
+                    if all_empty and text_length > 1000 and not is_empty_retry:
+                        # Suspicious empty result - retry with stronger prompt
+                        logger.warning(f"Suspicious empty extraction for {url} (text length: {text_length}), retrying...")
+                        is_empty_retry = True
+                        continue
+                    
+                    # Format fields
+                    products = self._format_field(validated_dict.get('products', []))
+                    services = self._format_field(validated_dict.get('services', []))
+                    customers = self._format_field(validated_dict.get('customers', []))
+                    partnerships = self._format_field(validated_dict.get('partnerships', []))
+                    case_studies = self._format_field(validated_dict.get('case_studies', []))
+                    
+                    # Determine status
+                    status = 'empty_but_checked' if (all_empty and is_empty_retry) else self._determine_status(
+                        products, services, customers, partnerships, case_studies
+                    )
+                    
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    
+                    if status == 'success':
+                        logger.info(f"Extracted data for {url}")
+                    elif status == 'empty_but_checked':
+                        logger.info(f"Empty extraction verified for {url} (checked twice)")
+                    
+                    return ExtractionResult(
+                        products=products,
+                        services=services,
+                        customers=customers,
+                        partnerships=partnerships,
+                        case_studies=case_studies,
+                        status=status,
+                        url=url,
+                        elapsed_ms=elapsed_ms
+                    )
+                    
+                except ValueError as ve:
+                    # Validation failed - retry with fix JSON prompt
+                    if validation_attempt < 2:
+                        logger.warning(f"Validation failed for {url}, retry {validation_attempt + 1}/2: {ve}")
+                        continue
+                    else:
+                        # Max retries reached
+                        logger.error(f"Validation failed after 2 retries for {url}: {ve}")
+                        return ExtractionResult(
+                            products="N/A",
+                            services="N/A",
+                            customers="N/A",
+                            partnerships="N/A",
+                            case_studies="N/A",
+                            status="failed",
+                            error=f"Validation failed: {str(ve)[:50]}",
+                            url=url,
+                            elapsed_ms=(time.time() - start_time) * 1000
+                        )
+                        
+            except (TimeoutError, ConnectionError, ollama.ResponseError) as e:
+                logger.error(f"Ollama failed for {url}: {e}")
+                return ExtractionResult(
+                    products="N/A",
+                    services="N/A",
+                    customers="N/A",
+                    partnerships="N/A",
+                    case_studies="N/A",
+                    status="failed",
+                    error=f"Ollama error: {str(e)[:50]}",
+                    url=url,
+                    elapsed_ms=(time.time() - start_time) * 1000
+                )
+            except json.JSONDecodeError as e:
+                if validation_attempt < 2:
+                    logger.warning(f"JSON parse error for {url}, retry {validation_attempt + 1}/2")
+                    continue
+                logger.error(f"JSON parsing error for {url}: {e}")
+                return ExtractionResult(
+                    products="N/A",
+                    services="N/A",
+                    customers="N/A",
+                    partnerships="N/A",
+                    case_studies="N/A",
+                    status="failed",
+                    error=f"JSON error: {str(e)[:50]}",
+                    url=url,
+                    elapsed_ms=(time.time() - start_time) * 1000
+                )
+        
+        # Should not reach here, but handle anyway
+        return ExtractionResult(
+            products="N/A",
+            services="N/A",
+            customers="N/A",
+            partnerships="N/A",
+            case_studies="N/A",
+            status="failed",
+            error="Max retries exceeded",
+            url=url,
+            elapsed_ms=(time.time() - start_time) * 1000
+        )
     
     async def extract_batch(
         self,
