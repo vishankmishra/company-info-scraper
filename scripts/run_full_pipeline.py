@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
 """
 Full Pipeline Orchestration Script
-Connects Phase A (Scraping) and Phase B (LLM Experimentation)
 
-This script automates the complete data processing pipeline:
-1. Phase A: Scrape domains from data/domains_phase_a.txt → data/enterprise_raw.jsonl
-2. Phase B: Run LLM experiments on enterprise_raw.jsonl → data/experiment_results_groq.jsonl
+Orchestrates the two-phase data pipeline:
+- Phase A: Web scraping (domains → raw JSONL)
+- Phase B: LLM experimentation (raw JSONL → structured results)
 
 Usage:
     python scripts/run_full_pipeline.py
-    python scripts/run_full_pipeline.py --skip-scrape  # Skip scraping if already done
-    python scripts/run_full_pipeline.py --skip-llm     # Only run scraping
-    python scripts/run_full_pipeline.py --timeout 180  # Custom timeout per domain
+    python scripts/run_full_pipeline.py --skip-scrape
+    python scripts/run_full_pipeline.py --skip-llm
+    python scripts/run_full_pipeline.py --timeout 180
 
 Requirements:
-    - data/domains_phase_a.txt must exist
-    - GROQ_API_KEY environment variable must be set for Phase B
+    - data/domains_phase_a.txt
+    - GROQ_API_KEY environment variable (Phase B only)
 """
 
-import sys
+import argparse
+import json
 import os
 import subprocess
-import argparse
+import sys
 import time
 from pathlib import Path
 from typing import Optional
-
-# Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DOMAINS_FILE = PROJECT_ROOT / 'data' / 'domains_phase_a.txt'
 OUTPUT_JSONL = PROJECT_ROOT / 'data' / 'enterprise_raw.jsonl'
@@ -36,7 +34,7 @@ EXPERIMENT_SCRIPT = PROJECT_ROOT / 'scripts' / 'experiment_groq.py'
 
 
 def print_header(text: str, char: str = "="):
-    """Print a formatted header."""
+    """Print formatted section header."""
     width = 70
     print()
     print(char * width)
@@ -46,14 +44,14 @@ def print_header(text: str, char: str = "="):
 
 
 def print_step(step_num: int, total_steps: int, title: str, emoji: str = "🚀"):
-    """Print a step header."""
+    """Print pipeline step header."""
     print()
     print(f"{emoji} STEP {step_num}/{total_steps}: {title}")
     print("-" * 70)
 
 
 def check_file_exists(file_path: Path, description: str) -> bool:
-    """Check if a file exists and print result."""
+    """Verify file existence and log result."""
     if file_path.exists():
         print(f"✓ {description} found: {file_path}")
         return True
@@ -63,7 +61,7 @@ def check_file_exists(file_path: Path, description: str) -> bool:
 
 
 def count_domains(domains_file: Path) -> int:
-    """Count the number of valid domains in the file."""
+    """Count valid, non-comment domains in input file."""
     try:
         with open(domains_file, 'r') as f:
             domains = [line.strip() for line in f if line.strip() and not line.startswith('#')]
@@ -79,22 +77,7 @@ def run_command(
     timeout: Optional[int] = None,
     check: bool = True
 ) -> subprocess.CompletedProcess:
-    """
-    Run a command with proper error handling.
-    
-    Args:
-        command: Command to run as list of strings
-        description: Human-readable description of the command
-        timeout: Optional timeout in seconds
-        check: If True, raise exception on non-zero exit code
-        
-    Returns:
-        CompletedProcess result
-        
-    Raises:
-        subprocess.CalledProcessError: If check=True and command fails
-        subprocess.TimeoutExpired: If timeout is exceeded
-    """
+    """Execute subprocess command with timeout and error handling."""
     print(f"\n⏳ Running: {description}...")
     print(f"   Command: {' '.join(str(c) for c in command)}")
     print()
@@ -123,12 +106,7 @@ def run_command(
 
 
 def verify_scrape_output() -> tuple[bool, int]:
-    """
-    Verify that the scraper produced valid output.
-    
-    Returns:
-        Tuple of (success: bool, record_count: int)
-    """
+    """Validate scraper output file and count valid records."""
     if not OUTPUT_JSONL.exists():
         print(f"✗ Output file not found: {OUTPUT_JSONL}")
         return False, 0
@@ -158,18 +136,8 @@ def verify_scrape_output() -> tuple[bool, int]:
 
 
 def run_phase_a_scraping(timeout_per_domain: int = 120) -> bool:
-    """
-    Run Phase A: Scraping.
-    
-    Args:
-        timeout_per_domain: Timeout in seconds for each domain
-        
-    Returns:
-        True if scraping succeeded, False otherwise
-    """
+    """Execute Phase A web scraping pipeline."""
     print_step(1, 2, "PHASE A - Web Scraping", "🕷️")
-    
-    # Check prerequisites
     if not check_file_exists(DOMAINS_FILE, "Domains file"):
         print("\n❌ Cannot proceed without domains file!")
         return False
@@ -185,11 +153,9 @@ def run_phase_a_scraping(timeout_per_domain: int = 120) -> bool:
         print("\n❌ No domains to scrape!")
         return False
     
-    # Estimate time
-    estimated_time = domain_count * 15  # ~15 seconds average per domain
+    estimated_time = domain_count * 15
     print(f"⏱️  Estimated time: ~{estimated_time // 60} minutes ({estimated_time} seconds)")
     
-    # Run the scraper
     scraper_start = time.time()
     
     try:
@@ -203,13 +169,11 @@ def run_phase_a_scraping(timeout_per_domain: int = 120) -> bool:
                 '--timeout', str(timeout_per_domain)
             ],
             description="Batch scraping",
-            timeout=None,  # Let the scraper handle per-domain timeouts
-            check=False    # Don't fail if some domains fail (exit code 2)
+            timeout=None,
+            check=False
         )
         
         scraper_elapsed = time.time() - scraper_start
-        
-        # Verify output
         success, record_count = verify_scrape_output()
         
         if not success:
@@ -231,15 +195,8 @@ def run_phase_a_scraping(timeout_per_domain: int = 120) -> bool:
 
 
 def run_phase_b_llm_experiment() -> bool:
-    """
-    Run Phase B: LLM Experimentation.
-    
-    Returns:
-        True if experiment succeeded, False otherwise
-    """
+    """Execute Phase B LLM experimentation pipeline."""
     print_step(2, 2, "PHASE B - LLM Experimentation", "🤖")
-    
-    # Check prerequisites
     if not check_file_exists(OUTPUT_JSONL, "Scraping output (input for LLM)"):
         print("\n❌ Cannot run LLM experiment without scraped data!")
         print("   Run Phase A first or ensure enterprise_raw.jsonl exists.")
@@ -249,7 +206,6 @@ def run_phase_b_llm_experiment() -> bool:
         print("\n❌ Cannot proceed without experiment script!")
         return False
     
-    # Check API key
     if not os.environ.get('GROQ_API_KEY'):
         print("\n❌ GROQ_API_KEY environment variable not set!")
         print("   Please run: export GROQ_API_KEY='your-api-key'")
@@ -258,7 +214,6 @@ def run_phase_b_llm_experiment() -> bool:
         api_key = os.environ.get('GROQ_API_KEY')
         print(f"✓ GROQ_API_KEY is set ({api_key[:8]}...{api_key[-4:]})")
     
-    # Count input records
     try:
         import json
         record_count = 0
@@ -271,12 +226,9 @@ def run_phase_b_llm_experiment() -> bool:
         print(f"⚠️  Could not count records: {e}")
         record_count = 0
     
-    # Estimate time (experiment tests multiple models, ~5 domains per model)
-    # With 6 models and ~5s per domain + 3s delay = ~240s per model
-    estimated_time = 6 * 240  # ~24 minutes for full experiment
+    estimated_time = 6 * 240
     print(f"⏱️  Estimated time: ~{estimated_time // 60} minutes (tests ALL models)")
     
-    # Run the experiment
     experiment_start = time.time()
     
     try:
@@ -286,18 +238,16 @@ def run_phase_b_llm_experiment() -> bool:
                 str(EXPERIMENT_SCRIPT)
             ],
             description="LLM experiment (ALL models)",
-            timeout=None,  # Let it run (could take 20-30 minutes)
+            timeout=None,
             check=True
         )
         
         experiment_elapsed = time.time() - experiment_start
         
-        # Verify output
         if not EXPERIMENT_OUTPUT.exists():
             print(f"\n⚠️  Expected output file not found: {EXPERIMENT_OUTPUT}")
             return False
         
-        # Count experiment results
         try:
             import json
             result_count = 0
@@ -324,7 +274,7 @@ def run_phase_b_llm_experiment() -> bool:
 
 
 def main():
-    """Main orchestration function."""
+    """Orchestrate full two-phase pipeline execution."""
     parser = argparse.ArgumentParser(
         description='Full Pipeline: Phase A (Scraping) + Phase B (LLM Experimentation)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -365,7 +315,6 @@ Notes:
     
     args = parser.parse_args()
     
-    # Print banner
     print_header("FULL PIPELINE ORCHESTRATION", "█")
     print("This script runs:")
     print("  Phase A: Web Scraping (domains_phase_a.txt → enterprise_raw.jsonl)")
@@ -375,7 +324,6 @@ Notes:
     pipeline_start = time.time()
     phase_results = {}
     
-    # Phase A: Scraping
     if not args.skip_scrape:
         scrape_success = run_phase_a_scraping(timeout_per_domain=args.timeout)
         phase_results['Phase A'] = scrape_success
@@ -389,7 +337,6 @@ Notes:
         print_step(1, 2, "PHASE A - Web Scraping", "🕷️")
         print("⏭️  Skipping Phase A (--skip-scrape flag)")
         
-        # Verify input file exists
         if not check_file_exists(OUTPUT_JSONL, "Scraping output"):
             print("\n❌ Cannot skip scraping - no existing data found!")
             print(f"   Please run Phase A first or remove --skip-scrape flag.")
@@ -397,7 +344,6 @@ Notes:
         
         phase_results['Phase A'] = 'skipped'
     
-    # Phase B: LLM Experiment
     if not args.skip_llm:
         llm_success = run_phase_b_llm_experiment()
         phase_results['Phase B'] = llm_success
@@ -412,7 +358,6 @@ Notes:
         print("⏭️  Skipping Phase B (--skip-llm flag)")
         phase_results['Phase B'] = 'skipped'
     
-    # Final summary
     pipeline_elapsed = time.time() - pipeline_start
     
     print_header("✅ PIPELINE COMPLETE", "█")

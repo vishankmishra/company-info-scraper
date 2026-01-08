@@ -1,46 +1,30 @@
 #!/usr/bin/env python3
 """
-Batch Raw Text Scraper - Decoupled from LLM Processing
+Batch Web Scraper with Contact Extraction
 
-Phase 5 Bulletproof: 
-- Contact extraction with word-boundary regex (no false positives)
-- Social link extraction (LinkedIn, Twitter/X, Facebook)
-- Leadership page content preservation in raw_text
+Scrapes corporate websites and extracts structured data including contact
+information, social links, and leadership pages. Outputs raw text for
+downstream LLM processing.
 
 Usage:
     python batch_scrape_raw.py
-    python batch_scrape_raw.py --output raw_scrape_output.csv
-    python batch_scrape_raw.py --format jsonl --output raw_scrape_output.jsonl
-    python batch_scrape_raw.py --domain example.com  # Single domain test
-
-Output fields:
-    - domain: Original domain input
-    - final_url: The final URL after redirects
-    - raw_text: Extracted text content (includes leadership page content)
-    - scrape_status: "success" or "failed"
-    - error: Error message if failed
-    - pages_scraped: Number of pages scraped from this domain
-    - emails: List of extracted emails with type labels
-    - phones: List of extracted phones with type labels
-    - social_links: List of social media profile URLs
-    - leadership_url: URL identified as team/about page
+    python batch_scrape_raw.py --format jsonl --output output.jsonl
+    python batch_scrape_raw.py --domain example.com
+    python batch_scrape_raw.py --domains-file domains.txt
 """
 
-import sys
-import os
 import argparse
-import subprocess
-import json
-import tempfile
 import csv
-import time
+import json
 import logging
-from datetime import datetime
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field, asdict
-
-# Setup logging
+from typing import Any, Dict, List, Optional
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -49,7 +33,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Hardcoded domains list
 DOMAINS = [
     "dduh.in",
     "logisall.in",
@@ -82,7 +65,7 @@ DOMAINS = [
 
 @dataclass
 class ScrapeResult:
-    """Result of scraping a single domain."""
+    """Structured scraping result for a single domain."""
     domain: str
     final_url: str = ""
     raw_text: str = ""
@@ -90,7 +73,6 @@ class ScrapeResult:
     error: str = ""
     pages_scraped: int = 0
     scrape_time_seconds: float = 0.0
-    # Phase 5 Bulletproof: Contact info fields
     emails: List[Dict] = field(default_factory=list)
     phones: List[Dict] = field(default_factory=list)
     social_links: List[str] = field(default_factory=list)
@@ -98,7 +80,7 @@ class ScrapeResult:
 
 
 def get_venv_python() -> str:
-    """Get the path to the venv Python interpreter."""
+    """Locate virtual environment Python interpreter."""
     project_root = Path(__file__).parent
     venv_paths = [
         project_root / "venv" / "bin" / "python",
@@ -115,16 +97,7 @@ def get_venv_python() -> str:
 
 
 def scrape_domain_subprocess(domain: str, timeout: int = 120) -> ScrapeResult:
-    """
-    Scrape a single domain using Playwright spider in isolated subprocess.
-    
-    Args:
-        domain: Domain to scrape (e.g., 'example.com')
-        timeout: Subprocess timeout in seconds
-        
-    Returns:
-        ScrapeResult with raw text, contacts, socials, and status
-    """
+    """Execute Playwright spider in isolated subprocess for domain."""
     start_time = time.time()
     result = ScrapeResult(domain=domain)
     
@@ -191,14 +164,11 @@ if spider_ref[0]:
     if items:
         final_url = items[0].get('url', '')
     
-    # Phase 5 Bulletproof: Get aggregated data from spider
     all_emails = getattr(spider_ref[0], 'all_emails', [])
     all_phones = getattr(spider_ref[0], 'all_phones', [])
     all_social_links = list(getattr(spider_ref[0], 'all_social_links', set()))
     leadership_url = getattr(spider_ref[0], 'leadership_url', '') or ''
     combined_raw_text = getattr(spider_ref[0], 'combined_raw_text', '')
-
-# Deduplicate contacts
 def dedupe_contacts(contacts):
     best = {{}}
     for c in contacts:
@@ -263,7 +233,6 @@ with open(r"{result_file_path}", 'w', encoding='utf-8') as f:
                 result.social_links = subprocess_result.get('social_links', [])
                 result.leadership_url = subprocess_result.get('leadership_url', '')
                 
-                # Detailed logging
                 email_count = len(result.emails)
                 phone_count = len(result.phones)
                 social_count = len(result.social_links)
@@ -314,7 +283,7 @@ with open(r"{result_file_path}", 'w', encoding='utf-8') as f:
 
 
 def save_results_csv(results: List[ScrapeResult], output_file: str) -> None:
-    """Save results to CSV file."""
+    """Write scraping results to CSV."""
     fieldnames = [
         'domain', 'final_url', 'raw_text', 'scrape_status', 'error', 
         'pages_scraped', 'scrape_time_seconds',
@@ -335,7 +304,7 @@ def save_results_csv(results: List[ScrapeResult], output_file: str) -> None:
 
 
 def save_results_jsonl(results: List[ScrapeResult], output_file: str) -> None:
-    """Save results to JSONL file (one JSON object per line)."""
+    """Write scraping results to JSONL."""
     with open(output_file, 'w', encoding='utf-8') as f:
         for result in results:
             f.write(json.dumps(asdict(result), ensure_ascii=False) + '\n')
@@ -349,14 +318,13 @@ def run_batch_scrape(
     output_format: str = "csv",
     timeout_per_domain: int = 120
 ) -> Dict[str, Any]:
-    """Run batch scraping for multiple domains."""
+    """Execute batch scraping across multiple domains."""
     total_domains = len(domains)
     results: List[ScrapeResult] = []
     
     logger.info("=" * 70)
-    logger.info("BATCH RAW TEXT SCRAPER (Phase 5 Bulletproof)")
+    logger.info("BATCH WEB SCRAPER")
     logger.info("=" * 70)
-    logger.info(f"Features: Word-boundary regex, Social extraction, Leadership preservation")
     logger.info(f"Domains to scrape: {total_domains}")
     logger.info(f"Output: {output_file} ({output_format})")
     logger.info(f"Timeout per domain: {timeout_per_domain}s")
@@ -376,7 +344,6 @@ def run_batch_scrape(
     else:
         save_results_csv(results, output_file)
     
-    # Statistics
     successful = sum(1 for r in results if r.scrape_status == "success")
     failed = total_domains - successful
     total_pages = sum(r.pages_scraped for r in results)
@@ -426,7 +393,7 @@ def run_batch_scrape(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Batch Raw Text Scraper - Phase 5 Bulletproof Edition',
+        description='Batch Web Scraper with Contact Extraction',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
