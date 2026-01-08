@@ -154,4 +154,4 @@ FEED_URI = "output_data.csv"
 OLLAMA_MODEL = 'llama3'
 OLLAMA_TIMEOUT = 30  # 30 seconds - fail fast to avoid blocking pipeline
 OLLAMA_MAX_RETRIES = 1  # Single retry to avoid long waits (was 3)
-MAX_TEXT_LENGTH = 5000  # Reduced from 8000 to 5000 for faster LLM processing
+MAX_TEXT_LENGTH = 10000  # Maximum characters to send to LLM per page

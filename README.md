@@ -207,7 +207,7 @@ ollama_timeout: 90            # Timeout in seconds (90s recommended)
 ollama_max_retries: 3         # Retry failed LLM calls
 
 # Scraping Configuration
-max_text_length: 5000         # Max characters to send to LLM
+max_text_length: 10000         # Max characters to send to LLM
 download_delay: 0.5           # Delay between requests
 depth_limit: 1                # Crawl depth (0 = root only)
 auto_detect: true             # Auto-detect static/dynamic sites

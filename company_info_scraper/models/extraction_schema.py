@@ -29,8 +29,20 @@ class ExtractionSchema(BaseModel):
         default=[],
         description="List of case study titles or empty array"
     )
+    leadership: Union[List[str], str] = Field(
+        default=[],
+        description="List of leadership/team member names with titles or empty array"
+    )
+    emails: Union[List[str], str] = Field(
+        default=[],
+        description="List of email addresses or empty array"
+    )
+    phones: Union[List[str], str] = Field(
+        default=[],
+        description="List of phone numbers or empty array"
+    )
     
-    @field_validator('products', 'services', 'customers', 'partnerships', 'case_studies', mode='before')
+    @field_validator('products', 'services', 'customers', 'partnerships', 'case_studies', 'leadership', 'emails', 'phones', mode='before')
     @classmethod
     def normalize_field(cls, v):
         """Normalize field values: convert "N/A" to empty list, ensure list format."""
@@ -51,6 +63,9 @@ class ExtractionSchema(BaseModel):
             'services': self.services if isinstance(self.services, list) else [],
             'customers': self.customers if isinstance(self.customers, list) else [],
             'partnerships': self.partnerships if isinstance(self.partnerships, list) else [],
-            'case_studies': self.case_studies if isinstance(self.case_studies, list) else []
+            'case_studies': self.case_studies if isinstance(self.case_studies, list) else [],
+            'leadership': self.leadership if isinstance(self.leadership, list) else [],
+            'emails': self.emails if isinstance(self.emails, list) else [],
+            'phones': self.phones if isinstance(self.phones, list) else []
         }
 

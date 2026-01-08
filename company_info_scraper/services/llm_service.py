@@ -170,14 +170,18 @@ Return JSON:
     def _call_ollama_sync(self, prompt: str, use_json_mode: bool = True) -> str:
         """Synchronous Ollama call (will be run in thread pool)."""
         # Phase 5: Use JSON mode if available (qwen2.5, llama3.1+)
-        options = {}
+        # Phase B: Add num_ctx for large context handling (WSL memory fix applied)
+        options = {
+            'num_ctx': 4096,      # Explicitly reserve 4k context window
+            'temperature': 0.1    # Low temp for factual extraction
+        }
         if use_json_mode and self.model in ['qwen2.5:7b-instruct', 'llama3.1', 'llama3.2']:
             options['format'] = 'json'
         
         response = self.client.chat(
             model=self.model,
             messages=[{'role': 'user', 'content': prompt}],
-            options=options if options else None
+            options=options
         )
         return response['message']['content']
 
